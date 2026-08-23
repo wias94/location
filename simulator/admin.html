@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mobility Admin</title><style>
+body{font-family:system-ui,sans-serif;background:#0b1020;color:#e8ecf4;margin:0}.wrap{max-width:1000px;margin:auto;padding:24px}h1{font-size:24px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}.card{background:#151c31;border:1px solid #28324d;border-radius:12px;padding:18px}button,input,textarea{font:inherit;border-radius:7px;border:1px solid #3b496c;padding:9px;background:#0e1528;color:#fff}button{background:#346beb;cursor:pointer;margin:3px}input{width:90%;margin:4px 0}textarea{width:95%;height:270px}pre{white-space:pre-wrap;font-size:12px;color:#aebbd5}.danger{background:#b43b55}.ok{color:#62d89b}
+</style></head><body><div class="wrap"><h1>上海合成出行仿真 · Admin</h1><p id="message" class="ok">请输入 Admin API Key。</p>
+<div class="grid"><section class="card"><h2>连接</h2><input id="key" type="password" placeholder="ADMIN_API_KEY"><button onclick="loadConfig()">连接/刷新</button><pre id="status"></pre></section>
+<section class="card"><h2>仿真时钟</h2><button onclick="clock('pause',{})">暂停</button><button onclick="clock('resume',{})">继续</button><input id="speed" type="number" value="60" min="0"><button onclick="clock('speed',{speed:+speed.value})">修改倍速</button><input id="seek" type="datetime-local"><button onclick="clock('seek',{simulation_time:seek.value})">跳转</button><button class="danger" onclick="regenerate()">重新生成计划</button></section>
+<section class="card"><h2>人物交互/临时干预</h2><input id="pid" placeholder="P00001"><input id="lat" type="number" step="any" placeholder="纬度"><input id="lng" type="number" step="any" placeholder="经度"><input id="istatus" placeholder="状态，例如 meeting"><input id="duration" type="number" value="60" placeholder="分钟"><button onclick="interact()">创建干预</button></section>
+<section class="card"><h2>行为参数</h2><p>保存后会校验参数并重新生成计划。</p><textarea id="behavior"></textarea><button onclick="saveBehavior()">保存行为配置</button></section></div></div>
+<script>
+const headers=()=>({'Content-Type':'application/json','X-Admin-Key':key.value});
+async function call(url,opt={}){opt.headers=headers();let r=await fetch(url,opt);let t=await r.text();if(!r.ok)throw Error(t);return t?JSON.parse(t):{} }
+async function run(fn){try{message.textContent='处理中…';let x=await fn();message.textContent='完成';return x}catch(e){message.textContent='错误：'+e.message;throw e}}
+async function loadConfig(){let x=await run(()=>call('/api/v1/admin/config'));status.textContent=JSON.stringify(x.simulation,null,2);behavior.value=JSON.stringify(x.behavior,null,2)}
+async function clock(a,b){await run(()=>call('/api/v1/admin/clock/'+a,{method:'POST',body:JSON.stringify(b)}));await loadConfig()}
+async function regenerate(){await run(()=>call('/api/v1/admin/regenerate',{method:'POST'}));await loadConfig()}
+async function saveBehavior(){await run(()=>call('/api/v1/admin/behavior',{method:'PUT',body:behavior.value}));await loadConfig()}
+async function interact(){await run(()=>call('/api/v1/admin/interactions',{method:'POST',body:JSON.stringify({person_id:pid.value,lat:+lat.value,lng:+lng.value,status:istatus.value,duration_minutes:+duration.value})}));await loadConfig()}
+</script></body></html>
