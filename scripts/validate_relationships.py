@@ -18,11 +18,14 @@ def read(path: Path) -> list[dict[str, str]]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--population", type=Path, default=Path("data/gta_population_with_places.csv"))
+    parser.add_argument("--places", type=Path, default=Path("data/places.csv"))
     parser.add_argument("--memberships", type=Path, default=Path("data/person_organizations.csv"))
     parser.add_argument("--relationships", type=Path, default=Path("data/relationships.csv"))
     parser.add_argument("--family-coverage", type=float, default=.30)
     args = parser.parse_args()
     people = {row["person_id"]: row for row in read(args.population)}
+    used_places = {row["home_place_id"] for row in people.values()} | {row["work_place_id"] for row in people.values()}
+    places = {row["place_id"]: row for row in read(args.places) if row["place_id"] in used_places}
     memberships = {row["person_id"]: row for row in read(args.memberships)}
     relationships = read(args.relationships)
     errors, keys, ids = [], set(), set()
@@ -36,6 +39,15 @@ def main() -> None:
         ids.add(rid); keys.add(key); type_counts[kind] += 1
         if a == b or a not in people or b not in people: errors.append(f"invalid endpoints {rid}")
         if not row["description"].strip(): errors.append(f"missing description {rid}")
+        context = row.get("relationship_context", "").strip()
+        if len(context) < 120: errors.append(f"relationship context too short {rid}")
+        if people[a]["姓名"] not in context or people[b]["姓名"] not in context:
+            errors.append(f"relationship context lacks person names {rid}")
+        relevant_place_ids = {people[a]["home_place_id"], people[b]["home_place_id"]}
+        if kind == "coworker": relevant_place_ids.update((people[a]["work_place_id"], people[b]["work_place_id"]))
+        relevant_names = {places[place_id]["name"] for place_id in relevant_place_ids if place_id in places}
+        if relevant_names and not any(name in context for name in relevant_names):
+            errors.append(f"relationship context lacks a relevant place {rid}")
         degrees[a] += 1; degrees[b] += 1
         if kind in FAMILY_TYPES: family_people.update((a, b))
         if kind == "spouse":

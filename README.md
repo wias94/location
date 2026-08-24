@@ -29,7 +29,7 @@
 - `data/person_places.csv`：人物与 HOME、WORK 等固定地点的绑定。
 - `data/organizations.csv`：绑定到真实工作地点的合成公司或组织。
 - `data/person_organizations.csv`：人物的组织和团队归属。
-- `data/relationships.csv`：样本内家人、伴侣、同事、朋友、邻居等关系。
+- `data/relationships.csv`：样本内家人、伴侣、同事、朋友、邻居等关系；末列 `relationship_context` 结合双方人物属性、性格与相关地点，提供可直接用于 AI 提示词的具体中文关系背景。
 - `data/external_contacts.csv`：不属于这 10,000 人的轻量级样本外联系人。
 - `data/person_behavior_profiles.csv`：连续性格参数、沟通风格和可直接用于 AI 提示词的中文人物描述。
 

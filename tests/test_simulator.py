@@ -14,6 +14,7 @@ from simulator.population import load_population
 from simulator.routes import RoadNetworkRouteProvider, RouteCache
 from simulator.social import SocialCoordinator
 from simulator.world import WorldEngine
+from scripts.generate_relationships import GraphBuilder
 
 DATA = Path(__file__).parents[1] / "data" / "gta_synthetic_population_10000.csv"
 RUNTIME_DATA = Path(__file__).parents[1] / "data" / "gta_population_with_places.csv"
@@ -46,6 +47,30 @@ class SimulatorTests(unittest.TestCase):
                            ScheduleEngine._personality_weight(quiet, "friend_visit"))
         with RUNTIME_DATA.open(encoding="utf-8-sig", newline="") as handle:
             self.assertEqual(list(csv.DictReader(handle).fieldnames or [])[-1], "personality_summary")
+
+    def test_relationship_context_combines_people_place_and_personality(self):
+        people = {
+            "A": {"person_id": "A", "姓名": "甲", "年龄": "35", "具体职位": "工程师", "职业大类": "上班族",
+                  "communication_style": "直接", "sociability": ".8", "routine_preference": ".7",
+                  "family_orientation": ".4", "warmth": ".6", "spontaneity": ".3",
+                  "home_place_id": "HOME", "work_place_id": "WORK"},
+            "B": {"person_id": "B", "姓名": "乙", "年龄": "37", "具体职位": "设计师", "职业大类": "上班族",
+                  "communication_style": "温和", "sociability": ".4", "routine_preference": ".5",
+                  "family_orientation": ".7", "warmth": ".8", "spontaneity": ".6",
+                  "home_place_id": "HOME", "work_place_id": "WORK"},
+        }
+        places = {
+            "HOME": {"place_id": "HOME", "name": "测试公寓", "district": "Markham", "subtype": "apartments"},
+            "WORK": {"place_id": "WORK", "name": "测试办公楼", "district": "Toronto", "category": "office"},
+        }
+        organizations = [{"organization_id": "ORG", "name": "测试公司", "place_id": "WORK"}]
+        memberships = [{"person_id": pid, "organization_id": "ORG", "team_id": "TEAM", "member_role": people[pid]["具体职位"]}
+                       for pid in people]
+        graph = GraphBuilder(people, places, organizations, memberships, 42)
+        graph.add("A", "B", "coworker", .75, "shared_team", "简短说明")
+        context = graph.finalized()[0]["relationship_context"]
+        self.assertTrue(all(value in context for value in ("甲", "乙", "工程师", "设计师", "测试办公楼")))
+        self.assertGreaterEqual(len(context), 120)
 
     def test_occupation_work_patterns(self):
         engine = ScheduleEngine()
