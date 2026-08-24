@@ -226,6 +226,9 @@ FAMILY_RULES = {
             "study": 1.00,
             "errand": 1.00,
         },
+        "extra_events": [
+            event("visit_parent", 0.06, ["18:00", "22:30"], "PARENT_HOME", [60, 180]),
+        ],
     },
 
     "adult_children": {
@@ -242,6 +245,7 @@ FAMILY_RULES = {
         },
         "extra_events": [
             event("visit_adult_child", 0.08, ["18:00", "22:30"], "ADULT_CHILD_HOME", [60, 180]),
+            event("visit_parent", 0.03, ["18:00", "22:30"], "PARENT_HOME", [60, 150]),
         ],
     },
 
@@ -270,6 +274,7 @@ FAMILY_RULES = {
         "extra_events": [
             event("family_dinner_out", 0.08, ["17:30", "20:30"], "FAMILY_RESTAURANT", [45, 100]),
             event("child_activity", 0.12, ["16:00", "20:30"], "CHILD_ACTIVITY_POI", [45, 120]),
+            event("visit_parent", 0.04, ["17:30", "22:00"], "PARENT_HOME", [60, 150]),
         ],
     },
 }

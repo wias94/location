@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from itertools import count
 
 from scripts.person_behavior_templates import PERSON_TEMPLATES
 
-from .models import BehaviorTemplate, DailyEvent, Family, Occupation, Person, Place
+from .models import BehaviorTemplate, DailyEvent, Family, Occupation, Person, Place, SocialIntent
 from .config import BehaviorConfig
 from .places import PlaceResolver
 from .randomness import seeded_rng, stable_seed
@@ -27,6 +28,10 @@ class ScheduleEngine:
         self.routes = routes or RouteCache()
         self.seed = seed
         self.config = config or BehaviorConfig()
+        self.social_intents: dict[tuple[str, str], SocialIntent] = {}
+
+    def reset_social_intents(self) -> None:
+        self.social_intents.clear()
 
     def _works(self, person: Person, day: date) -> bool:
         rng = seeded_rng(person.person_id, day, "work_day", self.seed)
@@ -46,12 +51,31 @@ class ScheduleEngine:
                 return item
         return choices[-1]
 
+    @staticmethod
+    def _personality_weight(person: Person, event_type: str) -> float:
+        weights = {
+            "go_home": .65 + .55 * person.routine_preference + .35 * (1 - person.sociability),
+            "dinner_out": .55 + .55 * person.sociability + .35 * person.nightlife_preference,
+            "date": .35 + .75 * person.sociability + .55 * person.nightlife_preference,
+            "friend_visit": .35 + 1.10 * person.sociability,
+            "other_activity": .40 + .70 * person.spontaneity + .40 * person.travel_tolerance,
+            "cafe_or_coworking": .50 + .60 * person.sociability + .30 * person.activity_budget,
+            "study": .65 + .55 * person.routine_preference,
+            "errand": .70 + .40 * person.routine_preference,
+            "visit_parent": .35 + 1.10 * person.family_orientation,
+            "visit_adult_child": .35 + 1.10 * person.family_orientation,
+            "family_dinner_out": .45 + .95 * person.family_orientation,
+            "child_activity": .60 + .70 * person.family_orientation,
+        }
+        return weights.get(event_type, 1.0)
+
     def generate_day(self, person: Person, day: date) -> list[DailyEvent]:
         bound = self.places.bind_person(person)
         home, work = bound["HOME"], bound["WORK"]
         midnight = datetime.combine(day, time.min)
         end_day = midnight + timedelta(days=1)
         if not self._works(person, day):
+            self._non_workday_social_intent(person, day, midnight, end_day)
             return [self._event(person, day, 0, midnight, end_day, "stay_home", home, home)]
 
         template = behavior_template(person)
@@ -71,8 +95,12 @@ class ScheduleEngine:
             start_jitter = template.time_rules["work_start"]["jitter_min"]
             duration_rule = template.time_rules["work_duration_min"]
         hour, minute = map(int, base_start.split(":"))
-        work_start = datetime.combine(day, time(hour, minute)) + timedelta(minutes=timing_rng.randint(-start_jitter, start_jitter))
-        duration = duration_rule["base"] + timing_rng.randint(-duration_rule["jitter_min"], duration_rule["jitter_min"])
+        jitter_scale = .55 + .65 * (1 - person.routine_preference) + .25 * person.spontaneity
+        effective_start_jitter = max(2, round(start_jitter * jitter_scale))
+        effective_duration_jitter = max(5, round(duration_rule["jitter_min"] * jitter_scale))
+        work_start = datetime.combine(day, time(hour, minute)) + timedelta(
+            minutes=timing_rng.randint(-effective_start_jitter, effective_start_jitter))
+        duration = duration_rule["base"] + timing_rng.randint(-effective_duration_jitter, effective_duration_jitter)
         work_end = min(work_start + timedelta(minutes=duration), end_day - timedelta(minutes=30))
 
         seq = count()
@@ -126,11 +154,19 @@ class ScheduleEngine:
         else:
             current_place = work
 
-        evening_choices = tuple({**item, "probability": item["probability"] * self.config.evening_weight_multiplier.get(item["event"], 1.0)} for item in template.evening_events)
+        evening_choices = tuple({
+            **item,
+            "probability": item["probability"]
+            * self.config.evening_weight_multiplier.get(item["event"], 1.0)
+            * self._personality_weight(person, item["event"]),
+        } for item in template.evening_events)
         if not any(item["probability"] > 0 for item in evening_choices):
             evening_choices = ({"event": "go_home", "probability": 1.0, "destination": "HOME"},)
         evening = self._weighted(seeded_rng(person.person_id, day, "evening", self.seed), evening_choices)
-        if evening["destination"] not in {"HOME", "HOME_OR_DORM"} and "duration_min" in evening:
+        social_types = {"date", "friend_visit", "visit_parent", "visit_adult_child"}
+        if evening["event"] in social_types and "duration_min" in evening:
+            self._register_social_intent(person, day, evening, cursor, end_day)
+        elif evening["destination"] not in {"HOME", "HOME_OR_DORM"} and "duration_min" in evening:
             visit = self.places.resolve_place(evening["destination"], person, current_place, cursor)
             cursor = self._move(events, person, day, seq, cursor, current_place, visit, evening["event"])
             visit_end = min(cursor + timedelta(minutes=seeded_rng(person.person_id, day, "evening_duration", self.seed).randint(*evening["duration_min"])), end_day - timedelta(minutes=5))
@@ -141,7 +177,49 @@ class ScheduleEngine:
             cursor = self._move(events, person, day, seq, cursor, current_place, home, "commute", end_day)
         if cursor < end_day:
             events.append(self._event(person, day, next(seq), cursor, end_day, "stay_home", home, home))
-        return [event for event in events if event.end_time > event.start_time]
+        # A long cross-GTA trip can reach past midnight. Keep each generated day
+        # strictly within its own window so consecutive schedules never overlap.
+        return [
+            replace(event, end_time=min(event.end_time, end_day))
+            for event in events
+            if event.start_time < end_day and min(event.end_time, end_day) > event.start_time
+        ]
+
+    def _register_social_intent(self, person: Person, day: date, rule: dict, available_after: datetime,
+                                end_day: datetime) -> None:
+        window = rule.get("time_window") or ["17:00", "23:30"]
+        start_hour, start_minute = map(int, window[0].split(":"))
+        end_hour, end_minute = map(int, window[1].split(":"))
+        window_start = datetime.combine(day, time(start_hour % 24, start_minute))
+        window_end = datetime.combine(day, time(end_hour % 24, end_minute))
+        if window_end <= window_start:
+            window_end += timedelta(days=1)
+        duration = seeded_rng(person.person_id, day, f"{rule['event']}:social_duration", self.seed).randint(*rule["duration_min"])
+        earliest = max(available_after, window_start)
+        latest_end = min(window_end, end_day - timedelta(minutes=5))
+        if earliest + timedelta(minutes=duration) <= latest_end:
+            self.social_intents[(person.person_id, day.isoformat())] = SocialIntent(
+                person.person_id, day.isoformat(), rule["event"], rule["destination"], earliest, latest_end, duration,
+            )
+
+    def _non_workday_social_intent(self, person: Person, day: date, midnight: datetime, end_day: datetime) -> None:
+        if not self.config.social_enabled:
+            return
+        rng = seeded_rng(person.person_id, day, "non_workday_social", self.seed)
+        social_probability = min(1.0, self.config.non_workday_social_probability * (.45 + 1.10 * person.sociability))
+        if rng.random() >= social_probability:
+            return
+        choices = [
+            {"event": "friend_visit", "destination": "FRIEND_HOME", "probability": .50 * (.4 + person.sociability),
+             "time_window": ["12:00", "22:30"], "duration_min": [75, 210]},
+            {"event": "date", "destination": "DATE_POI", "probability": .25 * (.4 + person.sociability + person.nightlife_preference / 2),
+             "time_window": ["17:00", "23:30"], "duration_min": [90, 240]},
+            {"event": "visit_parent", "destination": "PARENT_HOME", "probability": .15 * (.4 + person.family_orientation),
+             "time_window": ["11:00", "21:30"], "duration_min": [90, 240]},
+            {"event": "visit_adult_child", "destination": "ADULT_CHILD_HOME", "probability": .10 * (.4 + person.family_orientation),
+             "time_window": ["11:00", "21:30"], "duration_min": [90, 240]},
+        ]
+        self._register_social_intent(person, day, self._weighted(rng, tuple(choices)), midnight, end_day)
 
     def _move(self, events, person, day, seq, start, origin, destination, event_type, cap=None):
         route = self.routes.get_or_create(origin, destination)

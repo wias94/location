@@ -12,6 +12,8 @@ from .behavior import ScheduleEngine
 from .clock import SimulationClock, utc_now
 from .config import BehaviorConfig
 from .population import load_population
+from .places import CsvPlaceProvider, PlaceResolver
+from .routes import RoadNetworkRouteProvider, RouteCache
 from .world import WorldEngine
 
 
@@ -56,22 +58,36 @@ class JsonStateStore:
 
 
 class SimulatorService:
-    def __init__(self, population_path: str | Path, state_path: str | Path, days: int = 7) -> None:
+    def __init__(self, population_path: str | Path, state_path: str | Path, days: int = 1,
+                 places_path: str | Path | None = None, relationships_path: str | Path | None = None,
+                 road_network_path: str | Path | None = None, route_cache_path: str | Path | None = None,
+                 external_contacts_path: str | Path | None = None) -> None:
         self.store = JsonStateStore(state_path)
         saved = self.store.load()
         initial_simulation = datetime.fromisoformat(os.getenv("SIMULATION_START", datetime.now().date().isoformat() + "T00:00:00"))
-        self.clock = SimulationClock.from_dict(saved["clock"]) if saved.get("clock") else SimulationClock(initial_simulation, utc_now(), 60)
+        self.clock = SimulationClock.from_dict(saved["clock"]) if saved.get("clock") else SimulationClock(initial_simulation, utc_now(), 1)
         self.behavior = BehaviorConfig.from_dict(saved.get("behavior"))
         self.people_list = load_population(population_path)
         self.people = {person.person_id: person for person in self.people_list}
-        self.days = int(saved.get("days", days))
+        self.days = int(days)
         self.version = int(saved.get("version", 1))
         self.schedule_start = date.fromisoformat(saved["schedule_start"]) if saved.get("schedule_start") else self.clock.now().date()
         self.interactions = [Interaction.from_dict(item) for item in saved.get("interactions", [])]
-        self.world = WorldEngine(ScheduleEngine(config=self.behavior))
+        self.place_provider = CsvPlaceProvider.from_file(places_path) if places_path else None
+        self.relationships_path = relationships_path
+        self.external_contacts_path = external_contacts_path
+        self.route_provider = RoadNetworkRouteProvider(road_network_path) if road_network_path and Path(road_network_path).exists() else None
+        self.route_cache = RouteCache(self.route_provider, route_cache_path) if self.route_provider else RouteCache()
+        self.world = self._new_world()
         self._cache: dict[tuple[str, int], dict[str, object]] = {}
         self._lock = threading.RLock()
         self._generation_lock = threading.Lock()
+
+    def _new_world(self) -> WorldEngine:
+        places = PlaceResolver(provider=self.place_provider, people=self.people,
+                               relationships_path=self.relationships_path,
+                               external_contacts_path=self.external_contacts_path) if self.place_provider else None
+        return WorldEngine(ScheduleEngine(config=self.behavior, places=places, routes=self.route_cache))
 
     def start(self) -> None:
         if not self.schedule_start <= self.clock.now().date() < self.schedule_start + timedelta(days=self.days):
@@ -80,14 +96,18 @@ class SimulatorService:
         self.save()
 
     def save(self) -> None:
+        self.route_cache.flush()
         self.store.save({"clock": self.clock.to_dict(), "behavior": self.behavior.to_dict(), "days": self.days,
                          "version": self.version, "schedule_start": self.schedule_start.isoformat(),
                          "interactions": [item.to_dict() for item in self.interactions]})
 
+    def close(self) -> None:
+        self.save(); self.route_cache.close()
+
     def regenerate(self, start_date: date | None = None) -> dict[str, object]:
         with self._generation_lock:
             target_start = start_date or self.clock.now().date()
-            new_world = WorldEngine(ScheduleEngine(config=self.behavior))
+            new_world = self._new_world()
             schedules = new_world.generate_population_period(self.people_list, target_start, self.days)
             with self._lock:
                 self.schedule_start = target_start
@@ -95,7 +115,8 @@ class SimulatorService:
                 self.version += 1
                 self._cache.clear()
                 self.save()
-                return {"people": len(self.people), "days": self.days, "events": sum(map(len, schedules.values())), "version": self.version}
+                return {"people": len(self.people), "days": self.days, "events": sum(map(len, schedules.values())),
+                        "social_events": len(new_world.social_events), "version": self.version}
 
     def ensure_coverage(self, timestamp: datetime) -> None:
         if not self.schedule_start <= timestamp.date() < self.schedule_start + timedelta(days=self.days):
@@ -137,7 +158,24 @@ class SimulatorService:
         return {"status": "paused" if self.clock.paused else "running", "simulation_time": self.clock.now().isoformat(),
                 "speed": self.clock.speed, "population": len(self.people), "schedule_start": self.schedule_start.isoformat(),
                 "schedule_end": (self.schedule_start + timedelta(days=self.days)).isoformat(), "version": self.version,
-                "interactions": len(self.interactions)}
+                "interactions": len(self.interactions), "social_events": len(self.world.social_events)}
+
+    def prewarm_routes(self, timestamp: datetime | None = None, horizon_minutes: int = 30, limit: int = 300) -> dict[str, int]:
+        if not self.route_provider:
+            return {"candidates": 0, "materialized": 0}
+        target = timestamp or self.clock.now()
+        horizon = target + timedelta(minutes=horizon_minutes)
+        candidates = {}
+        for events in self.world.events.values():
+            for event in events:
+                if event.route_id and event.end_time > target and event.start_time < horizon:
+                    candidates[event.route_id] = min(event.start_time, candidates.get(event.route_id, event.start_time))
+        pending = [route_id for route_id, _ in sorted(candidates.items(), key=lambda item: item[1])
+                   if not self.route_cache.is_materialized(route_id)]
+        for route_id in pending[:limit]:
+            self.route_cache.materialize(route_id)
+        self.route_cache.flush()
+        return {"candidates": len(candidates), "materialized": min(len(pending), limit)}
 
     def add_interaction(self, person_id: str, lat: float, lng: float, status: str, duration_minutes: int,
                         start_time: datetime | None = None) -> Interaction:

@@ -40,6 +40,18 @@ class Person:
     home_place_id: str | None = None
     work_place_id: str | None = None
     school_place_id: str | None = None
+    sociability: float = .5
+    routine_preference: float = .5
+    spontaneity: float = .5
+    travel_tolerance: float = .5
+    nightlife_preference: float = .5
+    activity_budget: float = .5
+    family_orientation: float = .5
+    warmth: float = .5
+    directness: float = .5
+    patience: float = .5
+    communication_style: str = "均衡自然"
+    personality_summary: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +88,8 @@ class DailyEvent:
     destination_place_id: str
     route_id: str | None = None
     status: str = "stationary"
+    social_event_id: str | None = None
+    counterparty_id: str | None = None
 
     @property
     def moving(self) -> bool:
@@ -93,3 +107,36 @@ class BehaviorTemplate:
     time_rules: dict[str, Any] = field(default_factory=dict)
     midday_events: tuple[dict[str, Any], ...] = ()
     evening_events: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalContact:
+    external_contact_id: str
+    person_id: str
+    relation_type: str
+    label: str
+    home_place_id: str
+    co_resident: bool = False
+    availability_profile: str = "evenings_and_weekends"
+
+
+@dataclass(frozen=True, slots=True)
+class SocialIntent:
+    person_id: str
+    day: str
+    event_type: str
+    destination_type: str
+    earliest: datetime
+    latest_end: datetime
+    duration_minutes: int
+
+
+@dataclass(frozen=True, slots=True)
+class SocialEvent:
+    social_event_id: str
+    event_type: str
+    start_time: datetime
+    end_time: datetime
+    place_id: str
+    participant_ids: tuple[str, ...]
+    external_contact_id: str | None = None

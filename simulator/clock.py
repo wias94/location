@@ -12,7 +12,7 @@ def utc_now() -> datetime:
 class SimulationClock:
     simulation_anchor: datetime
     real_anchor: datetime
-    speed: float = 60.0
+    speed: float = 1.0
     paused: bool = False
 
     def now(self, real_now: datetime | None = None) -> datetime:
@@ -55,4 +55,4 @@ class SimulationClock:
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "SimulationClock":
         return cls(datetime.fromisoformat(str(data["simulation_anchor"])), datetime.fromisoformat(str(data["real_anchor"])),
-                   float(data.get("speed", 60)), bool(data.get("paused", False)))
+                   float(data.get("speed", 1)), bool(data.get("paused", False)))

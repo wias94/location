@@ -18,13 +18,19 @@ from pydantic import BaseModel, Field
 from .service import SimulatorService
 
 ROOT = Path(__file__).parents[1]
-POPULATION_PATH = Path(os.getenv("POPULATION_PATH", ROOT / "data" / "shanghai_synthetic_population_10000.csv"))
+POPULATION_PATH = Path(os.getenv("POPULATION_PATH", ROOT / "data" / "gta_population_with_places.csv"))
+PLACES_PATH = Path(os.getenv("PLACES_PATH", ROOT / "data" / "places.csv"))
+RELATIONSHIPS_PATH = Path(os.getenv("RELATIONSHIPS_PATH", ROOT / "data" / "relationships.csv"))
+EXTERNAL_CONTACTS_PATH = Path(os.getenv("EXTERNAL_CONTACTS_PATH", ROOT / "data" / "external_contacts.csv"))
+ROAD_NETWORK_PATH = Path(os.getenv("ROAD_NETWORK_PATH", ROOT / "data" / "road_network.pkl"))
+ROUTE_CACHE_PATH = Path(os.getenv("ROUTE_CACHE_PATH", ROOT / "work" / "routes.sqlite"))
 STATE_PATH = Path(os.getenv("STATE_PATH", "/data/simulator-state.json" if Path("/data").exists() else ROOT / "work" / "simulator-state.json"))
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 PUBLIC_API_KEY = os.getenv("PUBLIC_API_KEY", "")
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 security = HTTPBasic(auto_error=False)
-service = SimulatorService(POPULATION_PATH, STATE_PATH, int(os.getenv("SCHEDULE_DAYS", "7")))
+service = SimulatorService(POPULATION_PATH, STATE_PATH, int(os.getenv("SCHEDULE_DAYS", "1")), PLACES_PATH,
+                           RELATIONSHIPS_PATH, ROAD_NETWORK_PATH, ROUTE_CACHE_PATH, EXTERNAL_CONTACTS_PATH)
 
 
 @asynccontextmanager
@@ -33,23 +39,30 @@ async def lifespan(_: FastAPI):
         raise RuntimeError("ADMIN_API_KEY must contain at least 16 characters in production")
     await asyncio.to_thread(service.start)
     maintenance = asyncio.create_task(maintain_schedule())
+    route_warming = asyncio.create_task(warm_routes())
     try:
         yield
     finally:
         maintenance.cancel()
-        service.save()
+        route_warming.cancel()
+        service.close()
 
 
 async def maintain_schedule() -> None:
     while True:
         await asyncio.sleep(30)
         current = service.clock.now()
-        remaining = (service.schedule_start + timedelta(days=service.days) - current.date()).days
-        if remaining <= 1:
+        if not service.schedule_start <= current.date() < service.schedule_start + timedelta(days=service.days):
             await asyncio.to_thread(service.regenerate, current.date())
 
 
-app = FastAPI(title="Shanghai Synthetic Mobility API", version="1.0.0", lifespan=lifespan)
+async def warm_routes() -> None:
+    while True:
+        await asyncio.to_thread(service.prewarm_routes)
+        await asyncio.sleep(60)
+
+
+app = FastAPI(title="GTA Synthetic Mobility API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1_000)
 origins = [item.strip() for item in os.getenv("CORS_ORIGINS", "").split(",") if item.strip()]
 if origins:
