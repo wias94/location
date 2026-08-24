@@ -1,26 +1,98 @@
-# Greater Toronto Area Synthetic Mobility Simulator
+# GTA 10,000 人实时位置与行为模拟器
 
-Deterministic, event-based mobility simulation for the supplied 10,000-person synthetic population.
+这是一个面向大多伦多地区（GTA）的合成人口移动模拟项目。系统使用 10,000 名成年合成人物、真实 OpenStreetMap 地点、固定人物关系和可调行为规则，在任意时间点实时计算每个人的位置与状态。
 
-Runtime locations and drivable routes come from the local Greater Toronto OpenStreetMap extract. No per-minute GPS records are persisted; current locations are calculated from the real-time clock and the active event.
+当前地点池覆盖 Toronto、North York、Scarborough、Brampton、Markham、Vaughan、Richmond Hill 一带；人物住宅目前只分配在 **Markham** 和 **Scarborough**。
 
-## Run
+## 核心模型
 
-The CLI core requires Python 3.11+ with no third-party runtime dependencies. The API dependencies are listed in `requirements.txt`.
+系统的基本流程是：
+
+```text
+当前时间 → 行为日程 → 地点选择 → 道路路线 → 实时位置
+```
+
+- 不预先保存 10,000 人每分钟的 GPS 记录。
+- API 收到查询后，根据当前时钟、正在进行的事件和路线实时计算位置。
+- 默认模拟速度为 `1.0`，即现实 1 秒对应模拟 1 秒；管理员可暂停、跳转或加速。
+- 日程以一天为滚动窗口生成，服务跨日后自动补充下一天。
+- HOME、WORK 和组织归属是固定绑定；餐厅、咖啡馆、商场等活动地点从真实 OSM POI 中选择。
+- 驾车时可以沿本地 OSM 道路图进行 A* 路由；没有道路图时自动退回直线估算。
+
+## 人物、地点与关系
+
+主要数据文件：
+
+- `data/gta_synthetic_population_10000.csv`：原始 10,000 人合成人口。
+- `data/gta_population_with_places.csv`：加入 HOME、WORK 和性格字段的运行时人物表。
+- `data/places.csv`：约 49 万个真实 OSM 地点，包括住宅、办公、餐饮、零售、医疗、公园等。
+- `data/person_places.csv`：人物与 HOME、WORK 等固定地点的绑定。
+- `data/organizations.csv`：绑定到真实工作地点的合成公司或组织。
+- `data/person_organizations.csv`：人物的组织和团队归属。
+- `data/relationships.csv`：样本内家人、伴侣、同事、朋友、邻居等关系。
+- `data/external_contacts.csv`：不属于这 10,000 人的轻量级样本外联系人。
+- `data/person_behavior_profiles.csv`：连续性格参数、沟通风格和可直接用于 AI 提示词的中文人物描述。
+
+地点先于关系生成。人物不要求以完整家庭为单位进入样本，因此母亲可能在表内、父亲可能不在表内。默认约 30% 的人物至少拥有一条样本内家庭关系；夫妻共享住宅，成年子女、父母、兄弟姐妹和其他亲属不强制同住。
+
+同事关系来自共同组织或团队；朋友、邻居和室友关系会参考已经分配好的地点与人物属性。约会、朋友外出、拜访朋友和探亲会检查双方空闲时间，并为样本内双方生成同步事件。拜访朋友会使用对方真实 HOME，外出活动会选择真实 POI。
+
+## 本地运行
+
+需要 Python 3.11 或更高版本：
 
 ```bash
+pip install -r requirements.txt
 python -m unittest discover -s tests -v
-python -m simulator.cli generate --start 2026-08-24 --days 1
 python -m simulator.cli world --time 2026-08-24T18:30:00 --compact
 python -m simulator.cli benchmark --time 2026-08-24T18:30:00
 ```
 
-The default runtime inputs are `data/gta_population_with_places.csv` and `data/places.csv`.
-They bind the supplied population to real OpenStreetMap locations.
+启动 API：
 
-## Rebuild places from OpenStreetMap
+```bash
+set ADMIN_API_KEY=replace-with-a-long-random-secret
+uvicorn simulator.api:app --host 0.0.0.0 --port 8000 --workers 1
+```
 
-Put the custom BBBike extract at `data/gta-mobility.osm.pbf`, then run:
+macOS 或 Linux 请使用：
+
+```bash
+export ADMIN_API_KEY=replace-with-a-long-random-secret
+```
+
+常用接口：
+
+- `GET /health`
+- `GET /api/v1/simulation`
+- `GET /api/v1/world?compact=true`
+- `GET /api/v1/world?bbox=-80.15,43.35,-78.65,44.05`
+- `GET /api/v1/people/P00001/location`
+
+`/api/v1/world` 一次返回当前 10,000 人的位置。`compact=true` 使用紧凑数组格式；可通过 `bbox` 只请求地图视野内的人物。
+
+## 行为管理界面
+
+打开 `/admin`，使用 HTTP Basic 登录：
+
+- 用户名：环境变量 `ADMIN_USER`，默认 `admin`
+- 密码：`ADMIN_API_KEY`
+
+页面可以调整：
+
+- 工作日、周末和服务业上班概率
+- 晚间活动权重
+- 约会、朋友和家庭活动接受率
+- 社交取消率、时间粒度和每日联动上限
+- 模拟时钟、暂停、跳转与速度
+- 日程重新生成
+- 临时指定某个人在一段时间内的位置和状态
+
+高级 JSON 编辑仍保留，方便备份和批量修改。
+
+## 从 OSM 重新生成数据
+
+仓库不保存可重新下载或生成的 `*.osm.pbf` 和 `road_network.pkl`。把 BBBike 导出的 GTA PBF 放到 `data/gta-mobility.osm.pbf`，然后执行：
 
 ```bash
 python scripts/extract_pbf_places.py
@@ -34,107 +106,49 @@ python scripts/validate_relationships.py
 python scripts/generate_external_contacts.py
 ```
 
-This produces `places.csv`, `person_places.csv`, and `gta_population_with_places.csv`.
-Homes are restricted to Markham and Scarborough. Workplaces use occupation and
-job-title rules, while children are assigned to schools in their home district.
+生成的 `data/road_network.pkl` 是本地可驾驶道路图，运行时路线缓存保存在 `work/routes.sqlite`。这两个文件都不会进入 Git 历史。
 
-`generate_relationships.py` then writes:
+## Railway 部署
 
-- `organizations.csv`: synthetic organizations anchored to real OSM workplaces
-- `person_organizations.csv`: organization and team membership for every person
-- `relationships.csv`: sparse typed edges with deterministic Chinese descriptions
-- `external_contacts.csv`: lightweight relatives/partners outside the 10,000-person sample
-- `person_behavior_profiles.csv`: continuous traits plus a prompt-ready Chinese personality summary
+仓库包含 `Dockerfile` 和 `railway.json`。在 Railway 中：
 
-By default, exactly 30% of people have at least one sampled family relationship.
-Spouses share a HOME; parents and adult children, siblings, and extended family do
-not require co-residence. Coworkers share an organization, while neighbor,
-housemate, and friend edges use already-assigned locations and profiles.
+1. 创建 Service 并连接 GitHub 仓库 `wias94/location`。
+2. 选择 `main` 分支并开启 Autodeploy。
+3. 设置不少于 16 个字符的 `ADMIN_API_KEY`。
+4. 如需保护公共 API，设置 `PUBLIC_API_KEY`。
+5. 挂载持久化 Volume 到 `/data`。
+6. 在 Networking 中生成公开域名。
+7. 暂时保持一个 replica 和一个 worker。
 
-The runtime population also appends ten `0..1` personality traits,
-`communication_style`, and a final `personality_summary` column. The same traits
-adjust schedule regularity, discretionary activity weights, travel radius, and
-social acceptance, so future dialogue prompts and observed mobility remain
-consistent. The downloaded source population CSV remains unchanged.
+推送到 `main` 后，只要 Autodeploy 已开启，Railway 会自动构建并部署新提交。`/health` 是部署健康检查地址。
 
-The generated `road_network.pkl` contains the largest connected drivable OSM
-network. Routes use local A* search and persist actual road geometry in
-`work/routes.sqlite`. Schedule generation uses a cheap duration estimate, while
-the service continuously prewarms routes for the next 30 simulated minutes.
-Activity destinations are selected from nearby real OSM POIs; friend visits use
-the selected friend's bound HOME. A post-schedule social coordinator matches free
-time for both participants before creating spouse dates, friend outings, visits,
-and family visits. An in-sample host receives a synchronized event. An external
-contact supplies a relationship and real HOME but is never added to the real-time
-population.
+注意：GitHub 仓库不包含 `data/road_network.pkl`，因此直接从 GitHub 部署时仍会使用真实 HOME、WORK 和活动 POI，但移动路径会退回直线估算。若 Railway 也需要真实道路路线，应把道路图放在持久化存储中并设置 `ROAD_NETWORK_PATH`，或在构建流程中下载 PBF 后生成道路图。
 
-## FastAPI service and Admin
+## 环境变量
 
-Install the API dependencies and start one process:
+- `ADMIN_API_KEY`：生产环境必填，至少 16 个字符。
+- `ADMIN_USER`：管理界面用户名，默认 `admin`。
+- `PUBLIC_API_KEY`：可选；启用后客户端通过 `X-API-Key` 发送。
+- `STATE_PATH`：时钟、行为配置和临时交互状态，Railway 默认 `/data/simulator-state.json`。
+- `SIMULATION_START`：初始模拟时间。
+- `SCHEDULE_DAYS`：滚动日程窗口，默认 `1`。
+- `CORS_ORIGINS`：允许访问 API 的来源，逗号分隔。
+- `POPULATION_PATH`：默认 `data/gta_population_with_places.csv`。
+- `PLACES_PATH`：默认 `data/places.csv`。
+- `RELATIONSHIPS_PATH`：默认 `data/relationships.csv`。
+- `EXTERNAL_CONTACTS_PATH`：默认 `data/external_contacts.csv`。
+- `ROAD_NETWORK_PATH`：默认 `data/road_network.pkl`。
+- `ROUTE_CACHE_PATH`：默认 `work/routes.sqlite`。
 
-```bash
-pip install -r requirements.txt
-set ADMIN_API_KEY=replace-with-a-long-random-secret
-uvicorn simulator.api:app --host 0.0.0.0 --port 8000 --workers 1
-```
+## 代码结构
 
-Public API:
+- `simulator/behavior.py`：从人物属性、性格和模板生成行为日程。
+- `simulator/places.py`：固定地点、真实活动 POI 和关系地点解析。
+- `simulator/social.py`：双方时间协调和同步社交事件。
+- `simulator/routes.py`：路线估算、OSM 道路图搜索和 SQLite 缓存。
+- `simulator/world.py`：任意时间点的位置插值和批量世界快照。
+- `simulator/service.py`：实时服务、滚动日程、缓存与状态持久化。
+- `simulator/api.py`：FastAPI 公共接口和管理接口。
+- `simulator/admin.html`：行为逻辑可视化编辑器。
 
-- `GET /health`
-- `GET /api/v1/simulation`
-- `GET /api/v1/world?compact=true`
-- `GET /api/v1/world?bbox=-80.15,43.35,-78.65,44.05`
-- `GET /api/v1/people/P00001/location`
-
-Open `/admin` and use HTTP Basic username `admin` with `ADMIN_API_KEY` as the password. The page separately asks for the same key so JavaScript can call protected Admin endpoints. The visual editor controls work probabilities, evening activity weights, social acceptance/cancellation rules, clock speed, regeneration, and temporary person interactions. Advanced JSON remains available for backup and bulk editing.
-
-Important environment variables:
-
-- `ADMIN_API_KEY`: required in production, minimum 16 characters
-- `PUBLIC_API_KEY`: optional; clients send it as `X-API-Key`
-- `STATE_PATH`: persistent JSON state; `/data/simulator-state.json` in Railway
-- `SIMULATION_START`: initial synthetic timestamp
-- `SCHEDULE_DAYS`: rolling generated horizon, default `1`
-- `CORS_ORIGINS`: comma-separated allowed App origins
-- `POPULATION_PATH`: optional population CSV override; defaults to `data/gta_population_with_places.csv`
-- `PLACES_PATH`: optional places CSV override; defaults to `data/places.csv`
-- `RELATIONSHIPS_PATH`: defaults to `data/relationships.csv`
-- `EXTERNAL_CONTACTS_PATH`: defaults to `data/external_contacts.csv`
-- `ROAD_NETWORK_PATH`: defaults to `data/road_network.pkl`
-- `ROUTE_CACHE_PATH`: defaults to `work/routes.sqlite`
-
-## Railway
-
-Deploy the repository using its `Dockerfile`. In Railway:
-
-1. Set `ADMIN_API_KEY` and optionally `PUBLIC_API_KEY`.
-2. Attach a persistent Volume mounted at `/data`.
-3. Generate a public domain in the service Networking settings.
-4. Keep exactly one replica/worker until shared Redis/PostgreSQL state is implemented.
-
-The service regenerates deterministic schedules after restart and stores only clock, behavior, interaction, and version state in the Volume.
-
-Add `--output events.jsonl` to `generate` to persist event metadata. Without it, the command only reports counts and timing.
-
-## Architecture
-
-- `models`: typed people, places, events, routes, and behavior templates
-- `population`: CSV normalization and loading
-- `places`: fixed/dynamic place resolver and in-memory provider
-- `behavior`: template-backed deterministic schedule generation
-- `person_behavior_profiles.csv`: stable personality features and natural-language character context
-- `social`: conflict-free shared events for sampled and external contacts
-- `routes`: cached replaceable route provider
-- `world`: arbitrary-time interpolation and batched world state
-- `cli`: generation, world query, and benchmark commands
-
-Random streams derive from person ID, date, event type, and base seed, so repeated runs are stable while different dates vary.
-
-## Reference benchmark
-
-Measured in the Codex bundled Python runtime on 2026-08-23:
-
-- 10,000 people × 7 days: 411,547 events in 16.49 seconds
-- `get_world()` for 10,000 people: 0.0495 seconds (about 202,000 locations/second)
-
-These figures are environment-specific; run the benchmark command above on the deployment host for a comparable result.
+所有随机流均由人物 ID、日期、事件类型和基础种子确定。同一输入可重复生成一致结果，不同日期仍会产生变化。
