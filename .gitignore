@@ -8,5 +8,3 @@ work/
 *.jsonl
 simulator-state.json
 data/osm_cache/
-data/*.osm.pbf
-data/*.pkl

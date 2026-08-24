@@ -92,7 +92,7 @@ export ADMIN_API_KEY=replace-with-a-long-random-secret
 
 ## 从 OSM 重新生成数据
 
-仓库不保存可重新下载或生成的 `*.osm.pbf` 和 `road_network.pkl`。把 BBBike 导出的 GTA PBF 放到 `data/gta-mobility.osm.pbf`，然后执行：
+仓库已包含 BBBike 导出的 `data/gta-mobility.osm.pbf` 和由其生成的 `data/road_network.pkl`。需要使用更新的 OSM 快照重建全部地点和人物绑定时，可以替换 PBF 后执行：
 
 ```bash
 python scripts/extract_pbf_places.py
@@ -106,7 +106,7 @@ python scripts/validate_relationships.py
 python scripts/generate_external_contacts.py
 ```
 
-生成的 `data/road_network.pkl` 是本地可驾驶道路图，运行时路线缓存保存在 `work/routes.sqlite`。这两个文件都不会进入 Git 历史。
+`data/road_network.pkl` 是运行时使用的本地可驾驶道路图，已经随仓库发布。按需生成的路线缓存保存在 `work/routes.sqlite`，不会进入 Git 历史。
 
 ## Railway 部署
 
@@ -122,7 +122,7 @@ python scripts/generate_external_contacts.py
 
 推送到 `main` 后，只要 Autodeploy 已开启，Railway 会自动构建并部署新提交。`/health` 是部署健康检查地址。
 
-注意：GitHub 仓库不包含 `data/road_network.pkl`，因此直接从 GitHub 部署时仍会使用真实 HOME、WORK 和活动 POI，但移动路径会退回直线估算。若 Railway 也需要真实道路路线，应把道路图放在持久化存储中并设置 `ROAD_NETWORK_PATH`，或在构建流程中下载 PBF 后生成道路图。
+GitHub 仓库包含 `data/road_network.pkl`，因此 Railway 直接从仓库构建时会加载真实 HOME、WORK、活动 POI 和 GTA 道路路线。首次构建需要额外下载约 124 MiB 的地图与道路数据；运行中生成的路线缓存仍写入 `ROUTE_CACHE_PATH`。
 
 ## 环境变量
 
