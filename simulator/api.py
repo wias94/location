@@ -24,13 +24,15 @@ RELATIONSHIPS_PATH = Path(os.getenv("RELATIONSHIPS_PATH", ROOT / "data" / "relat
 EXTERNAL_CONTACTS_PATH = Path(os.getenv("EXTERNAL_CONTACTS_PATH", ROOT / "data" / "external_contacts.csv"))
 ROAD_NETWORK_PATH = Path(os.getenv("ROAD_NETWORK_PATH", ROOT / "data" / "road_network.pkl"))
 ROUTE_CACHE_PATH = Path(os.getenv("ROUTE_CACHE_PATH", ROOT / "work" / "routes.sqlite"))
+ROUTING_MODE = os.getenv("ROUTING_MODE", "straight")
 STATE_PATH = Path(os.getenv("STATE_PATH", "/data/simulator-state.json" if Path("/data").exists() else ROOT / "work" / "simulator-state.json"))
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 PUBLIC_API_KEY = os.getenv("PUBLIC_API_KEY", "")
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 security = HTTPBasic(auto_error=False)
 service = SimulatorService(POPULATION_PATH, STATE_PATH, int(os.getenv("SCHEDULE_DAYS", "1")), PLACES_PATH,
-                           RELATIONSHIPS_PATH, ROAD_NETWORK_PATH, ROUTE_CACHE_PATH, EXTERNAL_CONTACTS_PATH)
+                           RELATIONSHIPS_PATH, ROAD_NETWORK_PATH, ROUTE_CACHE_PATH, EXTERNAL_CONTACTS_PATH,
+                           ROUTING_MODE)
 
 
 @asynccontextmanager
@@ -101,7 +103,7 @@ class InteractionRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "routing_mode": service.routing_mode}
 
 
 @app.get("/api/v1/simulation", dependencies=[Depends(require_public_key)])

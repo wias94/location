@@ -9,7 +9,7 @@
 系统的基本流程是：
 
 ```text
-当前时间 → 行为日程 → 地点选择 → 道路路线 → 实时位置
+当前时间 → 行为日程 → 地点选择 → 直线移动 → 实时位置
 ```
 
 - 不预先保存 10,000 人每分钟的 GPS 记录。
@@ -17,7 +17,7 @@
 - 默认模拟速度为 `1.0`，即现实 1 秒对应模拟 1 秒；管理员可暂停、跳转或加速。
 - 日程以一天为滚动窗口生成，服务跨日后自动补充下一天。
 - HOME、WORK 和组织归属是固定绑定；餐厅、咖啡馆、商场等活动地点从真实 OSM POI 中选择。
-- 驾车时可以沿本地 OSM 道路图进行 A* 路由；没有道路图时自动退回直线估算。
+- 默认使用起点和终点之间的直线移动，不加载道路图或生成路线缓存。设置 `ROUTING_MODE=road` 后可恢复本地 OSM 道路图 A* 路由。
 
 ## 人物、地点与关系
 
@@ -106,7 +106,7 @@ python scripts/validate_relationships.py
 python scripts/generate_external_contacts.py
 ```
 
-`data/road_network.pkl` 是运行时使用的本地可驾驶道路图，已经随仓库发布。按需生成的路线缓存保存在 `work/routes.sqlite`，不会进入 Git 历史。
+`data/road_network.pkl` 是保留备用的本地可驾驶道路图，已经随仓库发布。默认直线模式不会加载它；启用 `ROUTING_MODE=road` 后，按需生成的路线缓存保存在 `work/routes.sqlite`，不会进入 Git 历史。
 
 ## Railway 部署
 
@@ -122,7 +122,7 @@ python scripts/generate_external_contacts.py
 
 推送到 `main` 后，只要 Autodeploy 已开启，Railway 会自动构建并部署新提交。`/health` 是部署健康检查地址。
 
-GitHub 仓库包含 `data/road_network.pkl`，因此 Railway 直接从仓库构建时会加载真实 HOME、WORK、活动 POI 和 GTA 道路路线。首次构建需要额外下载约 124 MiB 的地图与道路数据；运行中生成的路线缓存仍写入 `ROUTE_CACHE_PATH`。
+Railway 默认使用直线模式，因此不会把 `data/road_network.pkl` 展开到内存，也不会运行后台 A* 预热或生成路线缓存。真实 HOME、WORK、活动 POI 和地点名称不受影响。以后在 Railway 增加 `ROUTING_MODE=road` 并重新部署，即可恢复 GTA 道路路线。
 
 ## 环境变量
 
@@ -139,6 +139,7 @@ GitHub 仓库包含 `data/road_network.pkl`，因此 Railway 直接从仓库构�
 - `EXTERNAL_CONTACTS_PATH`：默认 `data/external_contacts.csv`。
 - `ROAD_NETWORK_PATH`：默认 `data/road_network.pkl`。
 - `ROUTE_CACHE_PATH`：默认 `work/routes.sqlite`。
+- `ROUTING_MODE`：默认 `straight`；设置为 `road` 可重新启用保留的 OSM A* 道路导航。
 
 ## 代码结构
 

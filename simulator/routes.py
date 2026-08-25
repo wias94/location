@@ -121,6 +121,16 @@ class RoadNetworkRouteProvider:
         return Route(route_id, origin.place_id, destination.place_id, distance, duration, tuple(geometry), mode)
 
 
+def route_provider_for_mode(routing_mode: str, road_network_path: str | Path | None) -> RoadNetworkRouteProvider | None:
+    """Select straight-line or retained OSM routing without loading unused road data."""
+    mode = routing_mode.strip().lower()
+    if mode not in {"straight", "road"}:
+        raise ValueError("routing_mode must be 'straight' or 'road'")
+    if mode == "road" and road_network_path and Path(road_network_path).exists():
+        return RoadNetworkRouteProvider(road_network_path)
+    return None
+
+
 class RouteCache:
     def __init__(self, provider: RouteProvider | None = None, cache_path: str | Path | None = None) -> None:
         self.provider = provider or StraightLineRouteProvider()

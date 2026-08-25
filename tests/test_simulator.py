@@ -11,7 +11,7 @@ from simulator.config import BehaviorConfig
 from simulator.models import DailyEvent, ExternalContact, Family, Occupation, Place, SocialIntent
 from simulator.places import CsvPlaceProvider, PlaceResolver
 from simulator.population import load_population
-from simulator.routes import RoadNetworkRouteProvider, RouteCache
+from simulator.routes import RoadNetworkRouteProvider, RouteCache, StraightLineRouteProvider, route_provider_for_mode
 from simulator.social import SocialCoordinator
 from simulator.world import WorldEngine
 from scripts.generate_relationships import GraphBuilder
@@ -154,6 +154,13 @@ class SimulatorTests(unittest.TestCase):
             self.assertEqual(len(route.geometry), 2)  # cheap schedule-time estimate
             actual = cache.get(route.route_id)
             self.assertGreater(len(actual.geometry), 2)
+
+    def test_straight_routing_is_default_without_loading_road_graph(self):
+        self.assertIsNone(route_provider_for_mode("straight", Path("data/road_network.pkl")))
+        cache = RouteCache(route_provider_for_mode("straight", Path("data/road_network.pkl")))
+        self.assertIsInstance(cache.provider, StraightLineRouteProvider)
+        with self.assertRaises(ValueError):
+            route_provider_for_mode("unknown", None)
 
     def test_friend_visit_creates_synchronized_events(self):
         first = replace(self.people[0], home_place_id="HOME_A")

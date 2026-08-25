@@ -13,7 +13,7 @@ from .clock import SimulationClock, utc_now
 from .config import BehaviorConfig
 from .population import load_population
 from .places import CsvPlaceProvider, PlaceResolver
-from .routes import RoadNetworkRouteProvider, RouteCache
+from .routes import RouteCache, route_provider_for_mode
 from .world import WorldEngine
 
 
@@ -61,7 +61,7 @@ class SimulatorService:
     def __init__(self, population_path: str | Path, state_path: str | Path, days: int = 1,
                  places_path: str | Path | None = None, relationships_path: str | Path | None = None,
                  road_network_path: str | Path | None = None, route_cache_path: str | Path | None = None,
-                 external_contacts_path: str | Path | None = None) -> None:
+                 external_contacts_path: str | Path | None = None, routing_mode: str = "straight") -> None:
         self.store = JsonStateStore(state_path)
         saved = self.store.load()
         initial_simulation = datetime.fromisoformat(os.getenv("SIMULATION_START", datetime.now().date().isoformat() + "T00:00:00"))
@@ -76,7 +76,9 @@ class SimulatorService:
         self.place_provider = CsvPlaceProvider.from_file(places_path) if places_path else None
         self.relationships_path = relationships_path
         self.external_contacts_path = external_contacts_path
-        self.route_provider = RoadNetworkRouteProvider(road_network_path) if road_network_path and Path(road_network_path).exists() else None
+        self.requested_routing_mode = routing_mode.strip().lower()
+        self.route_provider = route_provider_for_mode(self.requested_routing_mode, road_network_path)
+        self.routing_mode = "road" if self.route_provider else "straight"
         self.route_cache = RouteCache(self.route_provider, route_cache_path) if self.route_provider else RouteCache()
         self.world = self._new_world()
         self._cache: dict[tuple[str, int], dict[str, object]] = {}
@@ -156,7 +158,8 @@ class SimulatorService:
 
     def status(self) -> dict[str, object]:
         return {"status": "paused" if self.clock.paused else "running", "simulation_time": self.clock.now().isoformat(),
-                "speed": self.clock.speed, "population": len(self.people), "schedule_start": self.schedule_start.isoformat(),
+                "speed": self.clock.speed, "population": len(self.people), "routing_mode": self.routing_mode,
+                "schedule_start": self.schedule_start.isoformat(),
                 "schedule_end": (self.schedule_start + timedelta(days=self.days)).isoformat(), "version": self.version,
                 "interactions": len(self.interactions), "social_events": len(self.world.social_events)}
 
