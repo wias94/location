@@ -5,6 +5,7 @@ from pathlib import Path
 
 from simulator.clock import SimulationClock
 from simulator.config import BehaviorConfig
+from simulator.organizations import OrganizationDirectory
 from simulator.service import Interaction, JsonStateStore
 
 
@@ -49,6 +50,16 @@ class RuntimeTests(unittest.TestCase):
         interaction = Interaction("I1", "P00001", start, start + timedelta(hours=1), 31.2, 121.4, "meeting")
         self.assertTrue(interaction.active(start + timedelta(minutes=30)))
         self.assertFalse(interaction.active(start + timedelta(hours=1)))
+
+    def test_static_organization_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            organizations = root / "organizations.csv"
+            memberships = root / "memberships.csv"
+            organizations.write_text("organization_id,name\nORG_1,Example Company\n", encoding="utf-8")
+            memberships.write_text("person_id,organization_id\nP1,ORG_1\n", encoding="utf-8")
+            result = OrganizationDirectory(organizations, memberships).for_person("P1")
+            self.assertEqual(result["organization"]["name"], "Example Company")
 
 
 if __name__ == "__main__":

@@ -24,11 +24,11 @@
 主要数据文件：
 
 - `data/gta_synthetic_population_10000.csv`：原始 10,000 人合成人口。
-- `data/gta_population_with_places.csv`：加入 HOME、WORK 和性格字段的运行时人物表。
+- `data/gta_population_with_places.csv`：加入 HOME、WORK、`employer_id` 和性格字段的运行时人物表。
 - `data/places.csv`：约 49 万个真实 OSM 地点，包括住宅、办公、餐饮、零售、医疗、公园等。
 - `data/person_places.csv`：人物与 HOME、WORK 等固定地点的绑定。
-- `data/organizations.csv`：绑定到真实工作地点的合成公司或组织。
-- `data/person_organizations.csv`：人物的组织和团队归属。
+- `data/organizations.csv`：一次性解析并缓存的雇主目录。优先使用 OSM 真实名称；`is_real_name`、`name_source`、匹配距离、来源链接和说明用于区分直接命名、附近 POI 匹配和未解析地点。
+- `data/person_organizations.csv`：人物的雇主、团队、原始工作地点和名称匹配可信度。多个公司可以映射到同一工作建筑，人物表通过 `employer_id` 引用组织。
 - `data/relationships.csv`：样本内家人、伴侣、同事、朋友、邻居等关系；末列 `relationship_context` 结合双方人物属性、性格与相关地点，提供可直接用于 AI 提示词的具体中文关系背景。
 - `data/external_contacts.csv`：不属于这 10,000 人的轻量级样本外联系人。
 - `data/person_behavior_profiles.csv`：连续性格参数、沟通风格和可直接用于 AI 提示词的中文人物描述。
@@ -36,6 +36,8 @@
 地点先于关系生成。人物不要求以完整家庭为单位进入样本，因此母亲可能在表内、父亲可能不在表内。默认约 30% 的人物至少拥有一条样本内家庭关系；夫妻共享住宅，成年子女、父母、兄弟姐妹和其他亲属不强制同住。
 
 同事关系来自共同组织或团队；朋友、邻居和室友关系会参考已经分配好的地点与人物属性。约会、朋友外出、拜访朋友和探亲会检查双方空闲时间，并为样本内双方生成同步事件。拜访朋友会使用对方真实 HOME，外出活动会选择真实 POI。
+
+公司名称只在数据生成阶段从本地 OSM 地点池解析一次。实时位置请求不会调用 Google、OSM 或其他公司查询服务；没有可靠名称的地点会明确标记为 `Unidentified ...`，不会伪造公司名。
 
 ## 本地运行
 
@@ -68,8 +70,11 @@ export ADMIN_API_KEY=replace-with-a-long-random-secret
 - `GET /api/v1/world?compact=true`
 - `GET /api/v1/world?bbox=-80.15,43.35,-78.65,44.05`
 - `GET /api/v1/people/P00001/location`
+- `GET /api/v1/organizations`
+- `GET /api/v1/people/P00001/organization`
 
 `/api/v1/world` 一次返回当前 10,000 人的位置。`compact=true` 使用紧凑数组格式；可通过 `bbox` 只请求地图视野内的人物。
+`/api/v1/organizations` 返回静态组织目录和人物归属，适合第二个项目启动时获取一次并缓存；公司名不会重复塞入每三分钟的位置快照。
 
 ## 行为管理界面
 
@@ -108,6 +113,8 @@ python scripts/generate_external_contacts.py
 
 `data/road_network.pkl` 是保留备用的本地可驾驶道路图，已经随仓库发布。默认直线模式不会加载它；启用 `ROUTING_MODE=road` 后，按需生成的路线缓存保存在 `work/routes.sqlite`，不会进入 Git 历史。
 
+`generate_relationships.py` 同时重建组织目录、人物雇主绑定和同事关系，并把稳定的 `employer_id` 合并回运行时人物表。组织名称来自本地 `places.csv`，因此该步骤不产生运行时外部 API 费用。
+
 ## Railway 部署
 
 仓库包含 `Dockerfile` 和 `railway.json`。在 Railway 中：
@@ -136,6 +143,8 @@ Railway 默认使用直线模式，因此不会把 `data/road_network.pkl` 展�
 - `POPULATION_PATH`：默认 `data/gta_population_with_places.csv`。
 - `PLACES_PATH`：默认 `data/places.csv`。
 - `RELATIONSHIPS_PATH`：默认 `data/relationships.csv`。
+- `ORGANIZATIONS_PATH`：默认 `data/organizations.csv`。
+- `PERSON_ORGANIZATIONS_PATH`：默认 `data/person_organizations.csv`。
 - `EXTERNAL_CONTACTS_PATH`：默认 `data/external_contacts.csv`。
 - `ROAD_NETWORK_PATH`：默认 `data/road_network.pkl`。
 - `ROUTE_CACHE_PATH`：默认 `work/routes.sqlite`。

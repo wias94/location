@@ -38,6 +38,7 @@ def load_population(path: str | Path) -> list[Person]:
                 job_title=row["具体职位"].strip(), hukou_type=(row.get("户口类型") or "").strip(),
                 hukou_province=(row.get("户口省份") or "").strip(), home_place_id=_blank(row.get("home_place_id")),
                 work_place_id=_blank(row.get("work_place_id")), school_place_id=_blank(row.get("school_place_id")),
+                employer_id=_blank(row.get("employer_id")),
                 sociability=_trait(row, "sociability"), routine_preference=_trait(row, "routine_preference"),
                 spontaneity=_trait(row, "spontaneity"), travel_tolerance=_trait(row, "travel_tolerance"),
                 nightlife_preference=_trait(row, "nightlife_preference"), activity_budget=_trait(row, "activity_budget"),

@@ -5,10 +5,14 @@ import argparse
 import csv
 import hashlib
 import json
-import math
 import random
 from collections import Counter, defaultdict
 from pathlib import Path
+
+try:
+    from scripts.generate_organizations import make_organizations, write_population_with_employers
+except ModuleNotFoundError:  # Direct execution from scripts/
+    from generate_organizations import make_organizations, write_population_with_employers
 
 
 def seeded_rng(*parts: object) -> random.Random:
@@ -30,32 +34,6 @@ def write_rows(path: Path, fields: list[str], rows: list[dict]) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader(); writer.writerows(rows)
-
-
-def make_organizations(people: dict[str, dict], places: dict[str, dict]) -> tuple[list[dict], list[dict]]:
-    occupants = defaultdict(list)
-    for person in people.values():
-        occupants[person["work_place_id"]].append(person)
-    organizations, memberships = [], []
-    team_members: dict[str, list[str]] = defaultdict(list)
-    for index, place_id in enumerate(sorted(occupants), 1):
-        place = places[place_id]
-        members = occupants[place_id]
-        org_id = f"ORG{index:05d}"
-        org_type = "university" if all(p["occupation_code"] == "university_student" for p in members) else place["category"]
-        team_size = 24 if org_type == "university" else (10 if org_type in {"office", "commercial", "industrial"} else 8)
-        ordered = sorted(members, key=lambda p: p["person_id"])
-        seeded_rng(org_id, "teams").shuffle(ordered)
-        for offset, person in enumerate(ordered):
-            team_id = f"{org_id}_T{offset // team_size + 1:03d}"
-            team_members[team_id].append(person["person_id"])
-            memberships.append({"person_id": person["person_id"], "organization_id": org_id,
-                                "team_id": team_id, "member_role": person["具体职位"]})
-        organizations.append({"organization_id": org_id,
-            "name": f"Synthetic {org_type.title()} {index:05d} @ {place['name']}",
-            "organization_type": org_type, "place_id": place_id, "district": place["district"],
-            "member_count": len(members), "team_count": math.ceil(len(members) / team_size)})
-    return organizations, memberships
 
 
 class GraphBuilder:
@@ -187,7 +165,7 @@ class GraphBuilder:
         elif kind == "coworker":
             membership = self.memberships.get(a_id, {})
             org = self.organizations.get(membership.get("organization_id", ""), {})
-            workplace = self.places.get(org.get("place_id", ""), self._work(a))
+            workplace = self._work(a)
             same_team = source == "shared_team"
             routines = [
                 "他们常在午餐前后同步进度，有紧急任务时会直接给对方发消息。",
@@ -196,7 +174,8 @@ class GraphBuilder:
             ]
             team_text = "同一团队" if same_team else "同一组织的不同团队"
             detail = (
-                f"{a_intro}与{b_intro}在{self._place_text(workplace)}的{team_text}工作，"
+                f"{a_intro}与{b_intro}在{org.get('name', '未命名组织')}任职，工作地点是"
+                f"{self._place_text(workplace)}，两人属于{team_text}，"
                 f"职位分别是{a.get('具体职位', '未注明')}和{b.get('具体职位', '未注明')}。{rng.choice(routines)}"
             )
         elif kind in {"neighbor", "housemate"}:
@@ -394,15 +373,21 @@ def main() -> None:
     args = parser.parse_args()
     population_rows = load_rows(args.population); people = {row["person_id"]: row for row in population_rows}
     used = {row["home_place_id"] for row in population_rows} | {row["work_place_id"] for row in population_rows}
-    places = {row["place_id"]: row for row in load_rows(args.places) if row["place_id"] in used}
-    organizations, memberships = make_organizations(people, places)
+    all_places = {row["place_id"]: row for row in load_rows(args.places)}
+    places = {place_id: all_places[place_id] for place_id in used}
+    organizations, memberships = make_organizations(people, places, all_places)
+    places.update({row["place_id"]: all_places[row["place_id"]] for row in organizations})
     graph = GraphBuilder(people, places, organizations, memberships, args.seed)
     family_people = graph.family(args.family_coverage)
     graph.coworkers(); graph.neighbors(); graph.friends(args.friend_degree)
     relationships = graph.finalized()
-    write_rows(args.organizations, ["organization_id", "name", "organization_type", "place_id", "district", "member_count", "team_count"], organizations)
-    write_rows(args.memberships, ["person_id", "organization_id", "team_id", "member_role"], memberships)
+    write_rows(args.organizations, ["organization_id", "name", "organization_type", "place_id", "district",
+        "member_count", "team_count", "employee_capacity", "name_source", "is_real_name", "match_confidence",
+        "max_match_distance_m", "work_place_count", "source", "source_id", "source_url", "description"], organizations)
+    write_rows(args.memberships, ["person_id", "organization_id", "team_id", "member_role", "work_place_id",
+                                      "match_distance_m", "match_confidence"], memberships)
     write_rows(args.relationships, ["relationship_id", "person_id_a", "person_id_b", "relationship_type", "directed", "strength", "source", "description", "relationship_context"], relationships)
+    write_population_with_employers(args.population, population_rows, memberships)
     print(json.dumps({"organizations": len(organizations), "memberships": len(memberships), "relationships": len(relationships),
                       "family_people": len(family_people), "family_coverage": len(family_people) / len(people),
                       "types": Counter(row["relationship_type"] for row in relationships)}, ensure_ascii=False, default=dict))

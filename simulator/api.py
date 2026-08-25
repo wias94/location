@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
+from .organizations import OrganizationDirectory
 from .service import SimulatorService
 
 ROOT = Path(__file__).parents[1]
@@ -25,6 +26,8 @@ EXTERNAL_CONTACTS_PATH = Path(os.getenv("EXTERNAL_CONTACTS_PATH", ROOT / "data" 
 ROAD_NETWORK_PATH = Path(os.getenv("ROAD_NETWORK_PATH", ROOT / "data" / "road_network.pkl"))
 ROUTE_CACHE_PATH = Path(os.getenv("ROUTE_CACHE_PATH", ROOT / "work" / "routes.sqlite"))
 ROUTING_MODE = os.getenv("ROUTING_MODE", "straight")
+ORGANIZATIONS_PATH = Path(os.getenv("ORGANIZATIONS_PATH", ROOT / "data" / "organizations.csv"))
+PERSON_ORGANIZATIONS_PATH = Path(os.getenv("PERSON_ORGANIZATIONS_PATH", ROOT / "data" / "person_organizations.csv"))
 STATE_PATH = Path(os.getenv("STATE_PATH", "/data/simulator-state.json" if Path("/data").exists() else ROOT / "work" / "simulator-state.json"))
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 PUBLIC_API_KEY = os.getenv("PUBLIC_API_KEY", "")
@@ -33,6 +36,7 @@ security = HTTPBasic(auto_error=False)
 service = SimulatorService(POPULATION_PATH, STATE_PATH, int(os.getenv("SCHEDULE_DAYS", "1")), PLACES_PATH,
                            RELATIONSHIPS_PATH, ROAD_NETWORK_PATH, ROUTE_CACHE_PATH, EXTERNAL_CONTACTS_PATH,
                            ROUTING_MODE)
+organization_directory = OrganizationDirectory(ORGANIZATIONS_PATH, PERSON_ORGANIZATIONS_PATH)
 
 
 @asynccontextmanager
@@ -145,6 +149,22 @@ def world(request: Request, time: datetime | None = None,
     else:
         content = {**result, "people": points}
     return JSONResponse(content, headers={"ETag": etag, "Cache-Control": "public, max-age=1"})
+
+
+@app.get("/api/v1/organizations", dependencies=[Depends(require_public_key)])
+def organizations(request: Request) -> Response:
+    etag = f'"organizations-{organization_directory.version}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return JSONResponse(organization_directory.snapshot(), headers={"ETag": etag, "Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/api/v1/people/{person_id}/organization", dependencies=[Depends(require_public_key)])
+def person_organization(person_id: str) -> dict[str, object]:
+    try:
+        return organization_directory.for_person(person_id)
+    except KeyError:
+        raise HTTPException(404, "Unknown person or organization") from None
 
 
 @app.get("/admin", response_class=HTMLResponse, dependencies=[Depends(require_admin_basic)])

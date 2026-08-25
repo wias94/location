@@ -14,6 +14,7 @@ from simulator.population import load_population
 from simulator.routes import RoadNetworkRouteProvider, RouteCache, StraightLineRouteProvider, route_provider_for_mode
 from simulator.social import SocialCoordinator
 from simulator.world import WorldEngine
+from scripts.generate_organizations import make_organizations
 from scripts.generate_relationships import GraphBuilder
 
 DATA = Path(__file__).parents[1] / "data" / "gta_synthetic_population_10000.csv"
@@ -37,6 +38,7 @@ class SimulatorTests(unittest.TestCase):
         profiled = load_population(RUNTIME_DATA)
         person = profiled[0]
         self.assertTrue(person.personality_summary)
+        self.assertTrue(person.employer_id)
         self.assertTrue(all(0 <= getattr(person, key) <= 1 for key in (
             "sociability", "routine_preference", "spontaneity", "travel_tolerance",
             "nightlife_preference", "activity_budget", "family_orientation", "warmth",
@@ -47,6 +49,32 @@ class SimulatorTests(unittest.TestCase):
                            ScheduleEngine._personality_weight(quiet, "friend_visit"))
         with RUNTIME_DATA.open(encoding="utf-8-sig", newline="") as handle:
             self.assertEqual(list(csv.DictReader(handle).fieldnames or [])[-1], "personality_summary")
+
+    def test_organizations_use_cached_real_osm_names(self):
+        people = {
+            "A": {"person_id": "A", "occupation_code": "office_worker", "具体职位": "软件工程师",
+                  "work_place_id": "WORK"},
+            "B": {"person_id": "B", "occupation_code": "freelancer", "具体职位": "摄影师",
+                  "work_place_id": "HOME_WORK"},
+        }
+        work = {"place_id": "WORK", "name": "OSM commercial W1", "category": "commercial",
+                "lat": "43.8000", "lng": "-79.3000", "district": "Scarborough", "osm_id": "W1",
+                "capacity_weight": "100"}
+        home_work = {"place_id": "HOME_WORK", "name": "12 Test Road", "category": "residential",
+                     "lat": "43.8100", "lng": "-79.3100", "district": "Scarborough", "osm_id": "W2",
+                     "capacity_weight": "2"}
+        real = {"place_id": "REAL", "name": "Real Toronto Software", "category": "office",
+                "lat": "43.8001", "lng": "-79.3001", "district": "Scarborough", "osm_id": "N3",
+                "capacity_weight": "40"}
+        places = {row["place_id"]: row for row in (work, home_work)}
+        all_places = {row["place_id"]: row for row in (work, home_work, real)}
+        organizations, memberships = make_organizations(people, places, all_places)
+        by_person = {row["person_id"]: row for row in memberships}
+        by_id = {row["organization_id"]: row for row in organizations}
+        self.assertEqual(by_id[by_person["A"]["organization_id"]]["name"], "Real Toronto Software")
+        self.assertEqual(by_id[by_person["A"]["organization_id"]]["name_source"], "osm_nearby_name")
+        self.assertEqual(by_id[by_person["B"]["organization_id"]]["is_real_name"], "false")
+        self.assertTrue(by_id[by_person["B"]["organization_id"]]["name"].startswith("Unidentified"))
 
     def test_relationship_context_combines_people_place_and_personality(self):
         people = {
@@ -69,7 +97,7 @@ class SimulatorTests(unittest.TestCase):
         graph = GraphBuilder(people, places, organizations, memberships, 42)
         graph.add("A", "B", "coworker", .75, "shared_team", "简短说明")
         context = graph.finalized()[0]["relationship_context"]
-        self.assertTrue(all(value in context for value in ("甲", "乙", "工程师", "设计师", "测试办公楼")))
+        self.assertTrue(all(value in context for value in ("甲", "乙", "工程师", "设计师", "测试办公楼", "测试公司")))
         self.assertGreaterEqual(len(context), 120)
 
     def test_occupation_work_patterns(self):

@@ -40,6 +40,7 @@ class Person:
     home_place_id: str | None = None
     work_place_id: str | None = None
     school_place_id: str | None = None
+    employer_id: str | None = None
     sociability: float = .5
     routine_preference: float = .5
     spontaneity: float = .5
