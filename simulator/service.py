@@ -12,7 +12,7 @@ from .behavior import ScheduleEngine
 from .clock import SimulationClock, utc_now
 from .config import BehaviorConfig
 from .population import load_population
-from .places import CsvPlaceProvider, PlaceResolver
+from .places import PlaceResolver, load_place_provider
 from .routes import RouteCache, route_provider_for_mode
 from .world import WorldEngine
 
@@ -73,7 +73,7 @@ class SimulatorService:
         self.version = int(saved.get("version", 1))
         self.schedule_start = date.fromisoformat(saved["schedule_start"]) if saved.get("schedule_start") else self.clock.now().date()
         self.interactions = [Interaction.from_dict(item) for item in saved.get("interactions", [])]
-        self.place_provider = CsvPlaceProvider.from_file(places_path) if places_path else None
+        self.place_provider = load_place_provider(places_path) if places_path else None
         self.relationships_path = relationships_path
         self.external_contacts_path = external_contacts_path
         self.requested_routing_mode = routing_mode.strip().lower()
@@ -105,6 +105,9 @@ class SimulatorService:
 
     def close(self) -> None:
         self.save(); self.route_cache.close()
+        close_places = getattr(self.place_provider, "close", None)
+        if close_places:
+            close_places()
 
     def regenerate(self, start_date: date | None = None) -> dict[str, object]:
         with self._generation_lock:

@@ -9,13 +9,13 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .population import load_population
-from .places import CsvPlaceProvider, PlaceResolver
+from .places import PlaceResolver, load_place_provider
 from .behavior import ScheduleEngine
 from .routes import RouteCache, route_provider_for_mode
 from .world import WorldEngine
 
 DEFAULT_POPULATION = Path(__file__).parents[1] / "data" / "gta_population_with_places.csv"
-DEFAULT_PLACES = Path(__file__).parents[1] / "data" / "places.csv"
+DEFAULT_PLACES = Path(__file__).parents[1] / "data" / "places.sqlite"
 DEFAULT_RELATIONSHIPS = Path(__file__).parents[1] / "data" / "relationships.csv"
 DEFAULT_EXTERNAL_CONTACTS = Path(__file__).parents[1] / "data" / "external_contacts.csv"
 DEFAULT_ROAD_NETWORK = Path(__file__).parents[1] / "data" / "road_network.pkl"
@@ -28,7 +28,7 @@ def world_engine(places_path: Path, people, relationships_path: Path, external_c
     by_id = {person.person_id: person for person in people}
     provider = route_provider_for_mode(routing_mode, road_network_path)
     routes = RouteCache(provider, route_cache_path) if provider else RouteCache()
-    return WorldEngine(ScheduleEngine(places=PlaceResolver(CsvPlaceProvider.from_file(places_path),
+    return WorldEngine(ScheduleEngine(places=PlaceResolver(load_place_provider(places_path),
                                                            people=by_id, relationships_path=relationships_path,
                                                            external_contacts_path=external_contacts_path), routes=routes))
 
@@ -78,7 +78,7 @@ def main() -> None:
     generation_s = time.perf_counter() - before
     if args.command == "generate":
         summary = {"people": len(people), "days": days, "events": sum(map(len, schedules.values())),
-                   "generation_seconds": round(generation_s, 3), "places": len(engine.schedule.places.provider.all()),
+                   "generation_seconds": round(generation_s, 3), "places": engine.schedule.places.provider.count(),
                    "routes": len(engine.schedule.routes.all()), "routing_mode": args.routing_mode}
         if args.output:
             with args.output.open("w", encoding="utf-8") as handle:

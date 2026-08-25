@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import math
+import sqlite3
+import threading
 from collections import defaultdict
 from pathlib import Path
 from typing import Protocol
@@ -14,6 +16,7 @@ class PlaceProvider(Protocol):
     def get(self, place_id: str) -> Place: ...
     def put(self, place: Place) -> None: ...
     def all(self) -> dict[str, Place]: ...
+    def count(self) -> int: ...
 
 
 class InMemoryPlaceProvider:
@@ -28,6 +31,9 @@ class InMemoryPlaceProvider:
 
     def all(self) -> dict[str, Place]:
         return dict(self._places)
+
+    def count(self) -> int:
+        return len(self._places)
 
 
 class CsvPlaceProvider(InMemoryPlaceProvider):
@@ -59,6 +65,9 @@ class CsvPlaceProvider(InMemoryPlaceProvider):
                 candidates.extend(self._spatial.get(category, {}).get((y, x), ()))
         return [place for place in candidates if _distance_km(origin, place) <= radius_km]
 
+    def category_places(self, category: str) -> list[Place]:
+        return [place for cell in self._spatial.get(category, {}).values() for place in cell]
+
     @classmethod
     def from_file(cls, path: str | Path) -> "CsvPlaceProvider":
         provider = cls()
@@ -69,6 +78,118 @@ class CsvPlaceProvider(InMemoryPlaceProvider):
                     source="openstreetmap", source_id=row.get("osm_id") or None,
                 ))
         return provider
+
+
+class SqlitePlaceProvider:
+    """Read static OSM places lazily from an indexed SQLite database.
+
+    Schedule-only fallback places remain in a small in-memory overlay, so the
+    immutable database can be shipped inside the application image.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self._database = sqlite3.connect(self.path, check_same_thread=False)
+        self._database.row_factory = sqlite3.Row
+        self._database.execute("PRAGMA query_only=ON")
+        self._database.execute("PRAGMA cache_size=-16384")
+        self._overlay: dict[str, Place] = {}
+        self._place_cache: dict[str, Place] = {}
+        self._spatial: dict[str, dict[tuple[int, int], list[Place]]] = defaultdict(lambda: defaultdict(list))
+        self._lock = threading.RLock()
+        rows = self._database.execute(
+            "SELECT place_id, name, category, lat, lng, osm_id FROM activity_places ORDER BY place_id"
+        ).fetchall()
+        for row in rows:
+            place = self._cached_place(row)
+            self._spatial[place.category][CsvPlaceProvider._cell(place.lat, place.lng)].append(place)
+
+    @staticmethod
+    def _place(row: sqlite3.Row) -> Place:
+        return Place(row["place_id"], row["name"], row["category"], float(row["lat"]), float(row["lng"]),
+                     source="openstreetmap", source_id=row["osm_id"] or None)
+
+    def _cached_place(self, row: sqlite3.Row) -> Place:
+        place_id = row["place_id"]
+        place = self._place_cache.get(place_id)
+        if place is None:
+            place = self._place(row)
+            self._place_cache[place_id] = place
+        return place
+
+    def get(self, place_id: str) -> Place:
+        if place_id in self._overlay:
+            return self._overlay[place_id]
+        if place_id in self._place_cache:
+            return self._place_cache[place_id]
+        with self._lock:
+            row = self._database.execute(
+                "SELECT place_id, name, category, lat, lng, osm_id FROM places WHERE place_id = ?",
+                (place_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(place_id)
+        place = self._cached_place(row)
+        self._place_cache[place_id] = place
+        return place
+
+    def prefetch(self, place_ids: object) -> None:
+        pending = sorted({str(place_id) for place_id in place_ids if place_id} - self._place_cache.keys())
+        for offset in range(0, len(pending), 900):
+            batch = pending[offset:offset + 900]
+            placeholders = ",".join("?" for _ in batch)
+            with self._lock:
+                rows = self._database.execute(
+                    f"SELECT place_id, name, category, lat, lng, osm_id FROM places WHERE place_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+            for row in rows:
+                self._cached_place(row)
+
+    def put(self, place: Place) -> None:
+        try:
+            self.get(place.place_id)
+        except KeyError:
+            self._overlay[place.place_id] = place
+
+    def nearby(self, category: str, origin: Place, radius_km: float) -> list[Place]:
+        lat_cells = math.ceil((radius_km / 111) / CsvPlaceProvider.GRID_DEGREES)
+        lng_cells = math.ceil((radius_km / (111 * math.cos(math.radians(origin.lat)))) /
+                              CsvPlaceProvider.GRID_DEGREES)
+        row, column = CsvPlaceProvider._cell(origin.lat, origin.lng)
+        candidates: list[Place] = []
+        for y in range(row - lat_cells, row + lat_cells + 1):
+            for x in range(column - lng_cells, column + lng_cells + 1):
+                candidates.extend(self._spatial.get(category, {}).get((y, x), ()))
+        return [place for place in candidates if _distance_km(origin, place) <= radius_km]
+
+    def category_places(self, category: str) -> list[Place]:
+        return [place for cell in self._spatial.get(category, {}).values() for place in cell]
+
+    def all(self) -> dict[str, Place]:
+        with self._lock:
+            rows = self._database.execute(
+                "SELECT place_id, name, category, lat, lng, osm_id FROM places ORDER BY id"
+            ).fetchall()
+        result = {row["place_id"]: self._place(row) for row in rows}
+        result.update(self._overlay)
+        return result
+
+    def count(self) -> int:
+        with self._lock:
+            static_count = int(self._database.execute("SELECT count(*) FROM places").fetchone()[0])
+        return static_count + len(self._overlay)
+
+    def close(self) -> None:
+        with self._lock:
+            self._database.close()
+
+
+def load_place_provider(path: str | Path) -> CsvPlaceProvider | SqlitePlaceProvider:
+    target = Path(path)
+    if target.suffix.lower() in {".sqlite", ".sqlite3", ".db"}:
+        return SqlitePlaceProvider(target)
+    return CsvPlaceProvider.from_file(target)
 
 
 class PlaceResolver:
@@ -132,6 +253,19 @@ class PlaceResolver:
                         row.get("availability_profile") or "evenings_and_weekends",
                     )
                     self.external_contacts[contact.person_id][contact.relation_type].append(contact)
+        prefetch = getattr(self.provider, "prefetch", None)
+        if prefetch:
+            prefetch(
+                place_id
+                for person in self.people.values()
+                for place_id in (person.home_place_id, person.work_place_id, person.school_place_id)
+            )
+            prefetch(
+                contact.home_place_id
+                for by_type in self.external_contacts.values()
+                for contacts in by_type.values()
+                for contact in contacts
+            )
 
     def _coordinates(self, key: str, origin: Place | None = None, radius_km: float = 12.0) -> tuple[float, float]:
         number = stable_seed(key, base_seed=self.seed)
@@ -186,6 +320,9 @@ class PlaceResolver:
             nearby = getattr(self.provider, "nearby", lambda *_: [])(category, current_place, 15.0 * travel_scale)
         if nearby:
             return nearby[stable_seed(person.person_id, bucket, destination_type, base_seed=self.seed) % len(nearby)]
+        category_places = getattr(self.provider, "category_places", lambda *_: [])(category)
+        if category_places:
+            return min(category_places, key=lambda place: _distance_km(current_place, place))
         place_id = f"DYN_{category.upper()}_{stable_seed(person.person_id, bucket, destination_type, base_seed=self.seed) % 100000:05d}"
         return self._ensure(place_id, category, current_place, radius)
 

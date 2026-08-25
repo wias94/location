@@ -9,13 +9,14 @@ from pathlib import Path
 from simulator.behavior import ScheduleEngine
 from simulator.config import BehaviorConfig
 from simulator.models import DailyEvent, ExternalContact, Family, Occupation, Place, SocialIntent
-from simulator.places import CsvPlaceProvider, PlaceResolver
+from simulator.places import CsvPlaceProvider, PlaceResolver, SqlitePlaceProvider
 from simulator.population import load_population
 from simulator.routes import RoadNetworkRouteProvider, RouteCache, StraightLineRouteProvider, route_provider_for_mode
 from simulator.social import SocialCoordinator
 from simulator.world import WorldEngine
 from scripts.generate_organizations import make_organizations
 from scripts.generate_relationships import GraphBuilder
+from scripts.build_places_db import build_places_database
 
 DATA = Path(__file__).parents[1] / "data" / "gta_synthetic_population_10000.csv"
 RUNTIME_DATA = Path(__file__).parents[1] / "data" / "gta_population_with_places.csv"
@@ -158,6 +159,36 @@ class SimulatorTests(unittest.TestCase):
         provider.put(origin); provider.put(restaurant)
         result = PlaceResolver(provider).resolve_place("RESTAURANT", self.people[0], origin, datetime(2026, 8, 24, 12))
         self.assertEqual(result.place_id, "REST")
+
+    def test_activity_uses_real_osm_poi_instead_of_synthetic_fallback(self):
+        provider = CsvPlaceProvider()
+        origin = Place("HOME", "Home", "residential", 43.8, -79.3, source="openstreetmap")
+        restaurant = Place("DISTANT_REST", "Real restaurant", "restaurant", 44.2, -79.8, source="openstreetmap")
+        provider.put(origin); provider.put(restaurant)
+        result = PlaceResolver(provider).resolve_place("RESTAURANT", self.people[0], origin,
+                                                       datetime(2026, 8, 24, 12))
+        self.assertEqual(result.place_id, "DISTANT_REST")
+
+    def test_sqlite_place_provider_reads_and_searches_real_places(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            csv_path, db_path = root / "places.csv", root / "places.sqlite"
+            csv_path.write_text(
+                "place_id,name,category,subtype,lat,lng,district,osm_id,capacity_weight\n"
+                "HOME,Home,residential,house,43.8000,-79.3000,Scarborough,W1,2\n"
+                "REST,Real restaurant,restaurant,restaurant,43.8010,-79.3010,Scarborough,N2,12\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(build_places_database(csv_path, db_path), 2)
+            provider = SqlitePlaceProvider(db_path)
+            try:
+                origin = provider.get("HOME")
+                self.assertEqual(provider.get("REST").source, "openstreetmap")
+                self.assertEqual([place.place_id for place in provider.nearby("restaurant", origin, 1)], ["REST"])
+                provider.put(Place("DYN", "Synthetic fallback", "park", 43.8, -79.3))
+                self.assertEqual(provider.get("DYN").name, "Synthetic fallback")
+            finally:
+                provider.close()
 
     def test_friend_visit_uses_relationship_home(self):
         first = replace(self.people[0], home_place_id="HOME_A")

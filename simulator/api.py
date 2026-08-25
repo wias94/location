@@ -20,7 +20,8 @@ from .service import SimulatorService
 
 ROOT = Path(__file__).parents[1]
 POPULATION_PATH = Path(os.getenv("POPULATION_PATH", ROOT / "data" / "gta_population_with_places.csv"))
-PLACES_PATH = Path(os.getenv("PLACES_PATH", ROOT / "data" / "places.csv"))
+DEFAULT_PLACES_PATH = ROOT / "data" / "places.sqlite"
+PLACES_PATH = Path(os.getenv("PLACES_PATH", DEFAULT_PLACES_PATH if DEFAULT_PLACES_PATH.exists() else ROOT / "data" / "places.csv"))
 RELATIONSHIPS_PATH = Path(os.getenv("RELATIONSHIPS_PATH", ROOT / "data" / "relationships.csv"))
 EXTERNAL_CONTACTS_PATH = Path(os.getenv("EXTERNAL_CONTACTS_PATH", ROOT / "data" / "external_contacts.csv"))
 ROAD_NETWORK_PATH = Path(os.getenv("ROAD_NETWORK_PATH", ROOT / "data" / "road_network.pkl"))

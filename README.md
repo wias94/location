@@ -25,7 +25,8 @@
 
 - `data/gta_synthetic_population_10000.csv`：原始 10,000 人合成人口。
 - `data/gta_population_with_places.csv`：加入 HOME、WORK、`employer_id` 和性格字段的运行时人物表。
-- `data/places.csv`：约 49 万个真实 OSM 地点，包括住宅、办公、餐饮、零售、医疗、公园等。
+- `data/places.csv`：494,877 个真实 OSM 地点的生成源，包括住宅、办公、餐饮、零售、医疗、公园等。
+- `data/places.sqlite`：API 使用的预生成只读地点库，含 R-Tree 空间索引；固定地点按需读取，只把 36,603 个活动 POI 放入轻量内存网格。
 - `data/person_places.csv`：人物与 HOME、WORK 等固定地点的绑定。
 - `data/organizations.csv`：一次性解析并缓存的雇主目录。优先使用 OSM 真实名称；`is_real_name`、`name_source`、匹配距离、来源链接和说明用于区分直接命名、附近 POI 匹配和未解析地点。
 - `data/person_organizations.csv`：人物的雇主、团队、原始工作地点和名称匹配可信度。多个公司可以映射到同一工作建筑，人物表通过 `employer_id` 引用组织。
@@ -38,6 +39,8 @@
 同事关系来自共同组织或团队；朋友、邻居和室友关系会参考已经分配好的地点与人物属性。约会、朋友外出、拜访朋友和探亲会检查双方空闲时间，并为样本内双方生成同步事件。拜访朋友会使用对方真实 HOME，外出活动会选择真实 POI。
 
 公司名称只在数据生成阶段从本地 OSM 地点池解析一次。实时位置请求不会调用 Google、OSM 或其他公司查询服务；没有可靠名称的地点会明确标记为 `Unidentified ...`，不会伪造公司名。
+
+当前活动地点同样来自这份 OSM 快照，而不是随机经纬度。地点池包含 8,340 个餐厅、1,922 个咖啡馆、690 个酒吧/酒馆/夜店、682 个健身或体育中心、29 个电影院、2,432 个公园、627 个超市、18,312 个其他零售地点、885 个医疗地点和 858 个药房。其中餐饮、酒吧、咖啡馆、健身/体育中心等超过 95% 带可读名称或地址；没有名称的对象仍保留真实 OSM 坐标和 ID。如果首选半径内没有候选，系统会使用该类别最近的真实 OSM 地点，而不是生成一个活动坐标。当前 `gym` 只覆盖 `fitness_centre` 和 `sports_centre`，尚未完整纳入 stadium、arena、pitch、ice rink 等大型或专项体育设施。
 
 ## 本地运行
 
@@ -101,6 +104,7 @@ export ADMIN_API_KEY=replace-with-a-long-random-secret
 
 ```bash
 python scripts/extract_pbf_places.py
+python scripts/build_places_db.py
 python scripts/build_road_network.py
 python scripts/assign_places.py
 python scripts/generate_personality_profiles.py
@@ -112,6 +116,8 @@ python scripts/generate_external_contacts.py
 ```
 
 `data/road_network.pkl` 是保留备用的本地可驾驶道路图，已经随仓库发布。默认直线模式不会加载它；启用 `ROUTING_MODE=road` 后，按需生成的路线缓存保存在 `work/routes.sqlite`，不会进入 Git 历史。
+
+`build_places_db.py` 在数据生成阶段把 CSV 转为预索引的 `data/places.sqlite`。部署启动时直接打开数据库，不会重新转换；CSV 保留在仓库中用于检查和重建，但通过 `.dockerignore` 排除在 Railway 镜像之外。
 
 `generate_relationships.py` 同时重建组织目录、人物雇主绑定和同事关系，并把稳定的 `employer_id` 合并回运行时人物表。组织名称来自本地 `places.csv`，因此该步骤不产生运行时外部 API 费用。
 
@@ -141,7 +147,7 @@ Railway 默认使用直线模式，因此不会把 `data/road_network.pkl` 展�
 - `SCHEDULE_DAYS`：滚动日程窗口，默认 `1`。
 - `CORS_ORIGINS`：允许访问 API 的来源，逗号分隔。
 - `POPULATION_PATH`：默认 `data/gta_population_with_places.csv`。
-- `PLACES_PATH`：默认 `data/places.csv`。
+- `PLACES_PATH`：默认优先使用 `data/places.sqlite`；数据库不存在时回退到 `data/places.csv`。
 - `RELATIONSHIPS_PATH`：默认 `data/relationships.csv`。
 - `ORGANIZATIONS_PATH`：默认 `data/organizations.csv`。
 - `PERSON_ORGANIZATIONS_PATH`：默认 `data/person_organizations.csv`。
