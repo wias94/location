@@ -79,6 +79,106 @@ export ADMIN_API_KEY=replace-with-a-long-random-secret
 `/api/v1/world` 一次返回当前 10,000 人的位置。`compact=true` 使用紧凑数组格式；可通过 `bbox` 只请求地图视野内的人物。
 `/api/v1/organizations` 返回静态组织目录和人物归属，适合第二个项目启动时获取一次并缓存；公司名不会重复塞入每三分钟的位置快照。
 
+## 另一个服务如何接入
+
+调用方应当每三分钟请求一次完整世界快照，不要为 10,000 个人分别发送请求。当前紧凑响应约为 458 KB 原始 JSON，启用 gzip 后约为 98 KB。
+
+### 1. 配置连接地址和密钥
+
+如果两个服务位于不同 Railway Project，调用方使用公开地址：
+
+```env
+LOCATION_API_BASE_URL=https://api-production-8f84.up.railway.app
+LOCATION_API_KEY=<same value as the location service PUBLIC_API_KEY>
+```
+
+如果两个服务位于同一个 Railway Project 的同一个 Environment，推荐使用 Private Networking。到位置 API Service 的 **Settings → Networking → Private Networking** 复制内部域名，并在调用方设置：
+
+```env
+LOCATION_API_BASE_URL=http://api.railway.internal:8000
+LOCATION_API_KEY=<same value as the location service PUBLIC_API_KEY>
+```
+
+上面的 `api.railway.internal` 应替换为 Railway 显示的实际内部域名，`8000` 应替换为位置服务实际监听的 `PORT`。本项目 Docker 镜像默认监听 `8000`，但如果 Railway 设置了其他 `PORT`，必须使用该值。只有同 Project、同 Environment 并使用 `.railway.internal` 地址时，服务间流量才会走 Railway 私网。不要把密钥写进源码或提交到 Git。
+
+如果位置服务没有设置 `PUBLIC_API_KEY`，`X-API-Key` 请求头可以省略；生产环境仍建议设置。
+
+### 2. 请求世界快照
+
+```http
+GET /api/v1/world?compact=true
+X-API-Key: <LOCATION_API_KEY>
+Accept-Encoding: gzip
+```
+
+紧凑响应示例：
+
+```json
+{
+  "t": "2026-08-26T12:03:00",
+  "v": 12,
+  "p": [
+    ["P00001", 43.8123456, -79.2345678, "work"],
+    ["P00002", 43.7789012, -79.3012345, "commute"]
+  ]
+}
+```
+
+- `t`：本次快照对应的模拟时间。
+- `v`：世界版本；管理员修改行为、人物或地点后会变化。
+- `p`：人物数组，每项固定为 `[person_id, lat, lng, status]`。
+- `lat`、`lng`：WGS84 十进制度坐标。
+- `status`：当前行为状态，例如 `stay_home`、`work`、`study`、`commuting`、`lunch_out` 或社交活动。
+
+Node.js 18+ 调用示例：
+
+```js
+const baseUrl = process.env.LOCATION_API_BASE_URL.replace(/\/$/, "");
+const apiKey = process.env.LOCATION_API_KEY;
+let etag;
+
+async function fetchWorld() {
+  const headers = { Accept: "application/json", "Accept-Encoding": "gzip" };
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  if (etag) headers["If-None-Match"] = etag;
+
+  const response = await fetch(`${baseUrl}/api/v1/world?compact=true`, {
+    headers,
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (response.status === 304) return null;
+  if (!response.ok) throw new Error(`Location API ${response.status}: ${await response.text()}`);
+
+  etag = response.headers.get("etag") || etag;
+  const snapshot = await response.json();
+  return {
+    time: snapshot.t,
+    version: snapshot.v,
+    people: snapshot.p.map(([personId, lat, lng, status]) => ({
+      personId, lat, lng, status,
+    })),
+  };
+}
+
+async function refresh() {
+  try {
+    const snapshot = await fetchWorld();
+    if (snapshot) {
+      // 在这里一次性更新或缓存全部人物位置。
+      console.log(snapshot.time, snapshot.people.length);
+    }
+  } catch (error) {
+    // 请求失败时保留上一次成功快照，下一轮再重试。
+    console.error(error);
+  }
+}
+
+await refresh();
+setInterval(refresh, 3 * 60 * 1000);
+```
+
+调用方应确保同一时间最多只有一个快照请求在运行；超时或失败时保留上一次成功结果，不要立即并发重试。API 返回 `ETag`，发送 `If-None-Match` 后，如果同一分钟和同一世界版本没有变化，服务器会返回 `304 Not Modified`。
+
 ## 行为管理界面
 
 打开 `/admin`，使用 HTTP Basic 登录：
