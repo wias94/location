@@ -87,13 +87,28 @@ class SocialCoordinator:
         candidates = [person_id for person_id in sorted(self.places.relationships.get(intent.person_id, {}).get(relation, ()))
                       if counts.get((person_id, intent.day), 0) < self.config.social_daily_limit]
         if candidates:
-            index = stable_seed(intent.person_id, intent.day, intent.event_type, "counterparty", base_seed=self.seed) % len(candidates)
-            return candidates[index], None
+            weights = [self.places.relationship_strengths.get((intent.person_id, relation, candidate), .5)
+                       for candidate in candidates]
+            point = (stable_seed(intent.person_id, intent.day, intent.event_type, "counterparty",
+                                 base_seed=self.seed) % 1_000_000) / 1_000_000 * sum(weights)
+            for candidate, weight in zip(candidates, weights):
+                point -= weight
+                if point <= 0:
+                    return candidate, None
+            return candidates[-1], None
         contacts = sorted(self.places.external_contacts.get(intent.person_id, {}).get(external_relation, ()),
                           key=lambda contact: contact.external_contact_id)
         if contacts:
-            index = stable_seed(intent.person_id, intent.day, intent.event_type, "external", base_seed=self.seed) % len(contacts)
-            return None, contacts[index]
+            weights = [self.places.external_strengths.get((intent.person_id, external_relation,
+                                                           contact.external_contact_id), .5)
+                       for contact in contacts]
+            point = (stable_seed(intent.person_id, intent.day, intent.event_type, "external",
+                                 base_seed=self.seed) % 1_000_000) / 1_000_000 * sum(weights)
+            for contact, weight in zip(contacts, weights):
+                point -= weight
+                if point <= 0:
+                    return None, contact
+            return None, contacts[-1]
         return None, None
 
     def _plan(self, intent: SocialIntent, participant_id: str | None, external: ExternalContact | None,

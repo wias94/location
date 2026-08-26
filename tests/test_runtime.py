@@ -95,11 +95,37 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(result["places"]["home"]["source"], "openstreetmap")
             self.assertEqual(result["person"]["sociability"], .91)
             self.assertEqual(result["person"]["communication_style"], "坦率热情")
+            custom_home = service.add_custom_place("测试家庭住宅", "residential", 43.81, -79.31)
+            custom_cafe = service.add_custom_place("测试常去咖啡馆", "cafe", 43.82, -79.32)
+            service.add_relationship(person_id=person_id, counterpart_kind="external", relation_type="parent",
+                                     counterpart_name="测试母亲", home_place_id=custom_home["place_id"])
+            service.add_relationship(person_id=person_id, counterpart_kind="in_population", relation_type="spouse",
+                                     counterpart_id="P00001", co_resident=True)
+            self.assertEqual(service.people["P00001"].home_place_id, service.people[person_id].home_place_id)
+            service.set_schedule_override(person_id, [6], "10:00", "14:00")
+            service.add_favorite_place(person_id, custom_cafe["place_id"], "cafe", "常去咖啡馆", 1)
+            rebuilt = service._new_world()
+            self.assertEqual(rebuilt.schedule.schedule_overrides[person_id]["workdays"], [6])
+            self.assertEqual(rebuilt.schedule.places.external_contacts[person_id]["parent"][0].label, "测试母亲")
+            self.assertGreater(rebuilt.schedule.places.external_strengths[(
+                person_id, "parent", rebuilt.schedule.places.external_contacts[person_id]["parent"][0].external_contact_id
+            )], 0)
+            self.assertEqual(rebuilt.schedule.places.favorite_places[person_id]["cafe"][0][0],
+                             custom_cafe["place_id"])
+            sunday_events = rebuilt.schedule.generate_day(service.people[person_id], datetime(2026, 8, 30).date())
+            work_events = [event for event in sunday_events if event.event_type == "work"]
+            self.assertEqual(min(event.start_time for event in work_events).strftime("%H:%M"), "10:00")
+            self.assertEqual(max(event.end_time for event in work_events).strftime("%H:%M"), "14:00")
             service.close()
 
             restored = SimulatorService(**options)
             self.assertIn(person_id, restored.people)
             self.assertEqual(len(restored.added_people), 1)
+            self.assertEqual(len(restored.admin_relationships), 2)
+            self.assertEqual(restored.people["P00001"].home_place_id, restored.people[person_id].home_place_id)
+            self.assertEqual(restored.schedule_overrides[person_id]["work_start"], "10:00")
+            self.assertEqual(len(restored.favorite_places), 1)
+            self.assertEqual(len(restored.custom_places), 2)
             restored.close()
 
 

@@ -137,6 +137,45 @@ class PersonCreateRequest(BaseModel):
     patience: float | None = Field(default=None, ge=0, le=1)
     communication_style: str | None = Field(default=None, max_length=80)
     personality_summary: str | None = Field(default=None, max_length=1_000)
+    background: str | None = Field(default=None, max_length=2_000)
+    interests: str | None = Field(default=None, max_length=1_000)
+    goals: str | None = Field(default=None, max_length=1_000)
+    dialogue_notes: str | None = Field(default=None, max_length=1_000)
+
+
+class RelationshipCreateRequest(BaseModel):
+    person_id: str = Field(min_length=2, max_length=12)
+    counterpart_kind: str = Field(pattern="^(in_population|external)$")
+    relation_type: str = Field(pattern="^(spouse|friend|parent|adult_child|coworker|extended_family)$")
+    counterpart_id: str | None = Field(default=None, max_length=12)
+    counterpart_name: str | None = Field(default=None, max_length=80)
+    co_resident: bool = False
+    home_place_id: str | None = Field(default=None, max_length=40)
+    strength: float = Field(default=.7, ge=0, le=1)
+    contact_frequency: str = Field(default="weekly", max_length=40)
+    description: str = Field(default="", max_length=2_000)
+
+
+class ScheduleOverrideRequest(BaseModel):
+    workdays: list[int] = Field(min_length=1, max_length=7)
+    work_start: str = Field(pattern="^(?:[01]\\d|2[0-3]):[0-5]\\d$")
+    work_end: str = Field(pattern="^(?:[01]\\d|2[0-3]):[0-5]\\d$")
+
+
+class FavoritePlaceRequest(BaseModel):
+    person_id: str = Field(min_length=2, max_length=12)
+    place_id: str = Field(min_length=2, max_length=40)
+    category: str = Field(min_length=2, max_length=40)
+    label: str = Field(default="", max_length=100)
+    weight: float = Field(default=.6, gt=0, le=1)
+
+
+class CustomPlaceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    category: str = Field(min_length=2, max_length=40)
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+    address: str = Field(default="", max_length=240)
 
 
 @app.get("/health")
@@ -210,7 +249,11 @@ def admin_page() -> str:
 def admin_config() -> dict[str, object]:
     return {"simulation": service.status(), "behavior": service.behavior.to_dict(),
             "interactions": [item.to_dict() for item in service.interactions[-100:]],
-            "added_people": [person.person_id for person in service.added_people[-100:]]}
+            "added_people": [person.person_id for person in service.added_people[-100:]],
+            "admin_relationships": service.admin_relationships[-100:],
+            "schedule_overrides": service.schedule_overrides,
+            "favorite_places": service.favorite_places[-100:],
+            "custom_places": [asdict(place) for place in service.custom_places[-100:]]}
 
 
 @app.post("/api/v1/admin/clock/{action}", dependencies=[Depends(require_admin_key)])
@@ -310,8 +353,9 @@ def create_person(body: PersonCreateRequest) -> dict[str, Any]:
 
 @app.get("/api/v1/admin/places/search", dependencies=[Depends(require_admin_key)])
 def search_person_place(q: Annotated[str, Query(min_length=2, max_length=160)],
-                        role: Annotated[str, Query(pattern="^(home|company|school)$")],
+                        role: Annotated[str, Query(pattern="^(home|company|school|favorite)$")],
                         occupation: Occupation = Occupation.OFFICE,
+                        category: Annotated[str | None, Query(max_length=40)] = None,
                         limit: Annotated[int, Query(ge=1, le=20)] = 8) -> dict[str, Any]:
     try:
         if role == "company":
@@ -328,6 +372,44 @@ def search_person_place(q: Annotated[str, Query(min_length=2, max_length=160)],
                              for place in service.search_places(q, "work", occupation, limit)]
             return {"query": q, "role": role, "results": companies}
         return {"query": q, "role": role,
-                "results": service.search_places(q, role, occupation, limit)}
+                "results": service.search_places(q, role, occupation, limit, category)}
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+
+
+@app.post("/api/v1/admin/relationships", dependencies=[Depends(require_admin_key)], status_code=201)
+async def create_relationship(body: RelationshipCreateRequest) -> dict[str, Any]:
+    try:
+        relationship = service.add_relationship(**body.model_dump())
+        regeneration = await asyncio.to_thread(service.regenerate, service.clock.now().date())
+        return {"relationship": relationship, "regeneration": regeneration}
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+
+
+@app.put("/api/v1/admin/people/{person_id}/schedule", dependencies=[Depends(require_admin_key)])
+async def update_person_schedule(person_id: str, body: ScheduleOverrideRequest) -> dict[str, Any]:
+    try:
+        override = service.set_schedule_override(person_id, **body.model_dump())
+        regeneration = await asyncio.to_thread(service.regenerate, service.clock.now().date())
+        return {"person_id": person_id.upper(), "schedule": override, "regeneration": regeneration}
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+
+
+@app.post("/api/v1/admin/favorite-places", dependencies=[Depends(require_admin_key)], status_code=201)
+async def create_favorite_place(body: FavoritePlaceRequest) -> dict[str, Any]:
+    try:
+        favorite = service.add_favorite_place(**body.model_dump())
+        regeneration = await asyncio.to_thread(service.regenerate, service.clock.now().date())
+        return {"favorite": favorite, "regeneration": regeneration}
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+
+
+@app.post("/api/v1/admin/custom-places", dependencies=[Depends(require_admin_key)], status_code=201)
+def create_custom_place(body: CustomPlaceRequest) -> dict[str, Any]:
+    try:
+        return service.add_custom_place(**body.model_dump())
     except ValueError as error:
         raise HTTPException(422, str(error)) from None

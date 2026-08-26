@@ -54,6 +54,10 @@ class Person:
     communication_style: str = "均衡自然"
     personality_summary: str = ""
     company_name: str = ""
+    background: str = ""
+    interests: str = ""
+    goals: str = ""
+    dialogue_notes: str = ""
 
 
 @dataclass(frozen=True, slots=True)

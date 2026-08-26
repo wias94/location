@@ -23,17 +23,22 @@ def behavior_template(person: Person) -> BehaviorTemplate:
 
 class ScheduleEngine:
     def __init__(self, places: PlaceResolver | None = None, routes: RouteCache | None = None, seed: int = 20260819,
-                 config: BehaviorConfig | None = None) -> None:
+                 config: BehaviorConfig | None = None,
+                 schedule_overrides: dict[str, dict] | None = None) -> None:
         self.places = places or PlaceResolver(seed=seed)
         self.routes = routes or RouteCache()
         self.seed = seed
         self.config = config or BehaviorConfig()
+        self.schedule_overrides = schedule_overrides or {}
         self.social_intents: dict[tuple[str, str], SocialIntent] = {}
 
     def reset_social_intents(self) -> None:
         self.social_intents.clear()
 
     def _works(self, person: Person, day: date) -> bool:
+        override = self.schedule_overrides.get(person.person_id)
+        if override and "workdays" in override:
+            return day.weekday() in override["workdays"]
         rng = seeded_rng(person.person_id, day, "work_day", self.seed)
         if person.occupation == Occupation.SERVICE:
             probability = self.config.service_work_probability[day.weekday()]
@@ -102,6 +107,12 @@ class ScheduleEngine:
             minutes=timing_rng.randint(-effective_start_jitter, effective_start_jitter))
         duration = duration_rule["base"] + timing_rng.randint(-effective_duration_jitter, effective_duration_jitter)
         work_end = min(work_start + timedelta(minutes=duration), end_day - timedelta(minutes=30))
+        override = self.schedule_overrides.get(person.person_id)
+        if override and override.get("work_start") and override.get("work_end"):
+            start_hour, start_minute = map(int, override["work_start"].split(":"))
+            end_hour, end_minute = map(int, override["work_end"].split(":"))
+            work_start = datetime.combine(day, time(start_hour, start_minute))
+            work_end = datetime.combine(day, time(end_hour, end_minute))
 
         seq = count()
         events: list[DailyEvent] = []

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,7 +11,7 @@ from typing import Any
 from .behavior import ScheduleEngine
 from .clock import SimulationClock, utc_now
 from .config import BehaviorConfig
-from .models import Family, Gender, Occupation, Person
+from .models import Family, Gender, Occupation, Person, Place
 from .population import (age_group_for, generated_personality, load_population, person_from_dict, person_to_dict,
                          summarize_personality)
 from .randomness import stable_seed
@@ -80,15 +80,27 @@ class SimulatorService:
         self.behavior = BehaviorConfig.from_dict(saved.get("behavior"))
         base_people = load_population(population_path)
         base_ids = {person.person_id for person in base_people}
+        self.person_place_overrides = dict(saved.get("person_place_overrides", {}))
         self.added_people = [person_from_dict(item) for item in saved.get("added_people", [])
                              if item.get("person_id") not in base_ids]
         self.people_list = [*base_people, *self.added_people]
+        self.people_list = [replace(person, **self.person_place_overrides.get(person.person_id, {}))
+                            for person in self.people_list]
+        added_ids = {person.person_id for person in self.added_people}
+        self.added_people = [person for person in self.people_list if person.person_id in added_ids]
         self.people = {person.person_id: person for person in self.people_list}
         self.days = int(days)
         self.version = int(saved.get("version", 1))
         self.schedule_start = date.fromisoformat(saved["schedule_start"]) if saved.get("schedule_start") else self.clock.now().date()
         self.interactions = [Interaction.from_dict(item) for item in saved.get("interactions", [])]
+        self.admin_relationships = list(saved.get("admin_relationships", []))
+        self.schedule_overrides = dict(saved.get("schedule_overrides", {}))
+        self.favorite_places = list(saved.get("favorite_places", []))
+        self.custom_places = [Place(**item) for item in saved.get("custom_places", [])]
         self.place_provider = load_place_provider(places_path) if places_path else None
+        if self.place_provider:
+            for place in self.custom_places:
+                self.place_provider.put(place)
         self.relationships_path = relationships_path
         self.external_contacts_path = external_contacts_path
         self.requested_routing_mode = routing_mode.strip().lower()
@@ -103,8 +115,11 @@ class SimulatorService:
     def _new_world(self) -> WorldEngine:
         places = PlaceResolver(provider=self.place_provider, people=self.people,
                                relationships_path=self.relationships_path,
-                               external_contacts_path=self.external_contacts_path) if self.place_provider else None
-        return WorldEngine(ScheduleEngine(config=self.behavior, places=places, routes=self.route_cache))
+                               external_contacts_path=self.external_contacts_path,
+                               admin_relationships=self.admin_relationships,
+                               favorite_places=self.favorite_places) if self.place_provider else None
+        return WorldEngine(ScheduleEngine(config=self.behavior, places=places, routes=self.route_cache,
+                                          schedule_overrides=self.schedule_overrides))
 
     def start(self) -> None:
         if not self.schedule_start <= self.clock.now().date() < self.schedule_start + timedelta(days=self.days):
@@ -117,7 +132,12 @@ class SimulatorService:
         self.store.save({"clock": self.clock.to_dict(), "behavior": self.behavior.to_dict(), "days": self.days,
                          "version": self.version, "schedule_start": self.schedule_start.isoformat(),
                          "interactions": [item.to_dict() for item in self.interactions],
-                         "added_people": [person_to_dict(person) for person in self.added_people]})
+                         "added_people": [person_to_dict(person) for person in self.added_people],
+                         "admin_relationships": self.admin_relationships,
+                         "schedule_overrides": self.schedule_overrides,
+                         "favorite_places": self.favorite_places,
+                         "custom_places": [asdict(place) for place in self.custom_places],
+                         "person_place_overrides": self.person_place_overrides})
 
     def close(self) -> None:
         self.save(); self.route_cache.close()
@@ -237,7 +257,7 @@ class SimulatorService:
         return value
 
     def search_places(self, query: str, role: str, occupation: Occupation | None = None,
-                      limit: int = 8) -> list[dict[str, Any]]:
+                      limit: int = 8, category: str | None = None) -> list[dict[str, Any]]:
         if not self.place_provider:
             return []
         role_key = role.strip().lower()
@@ -247,8 +267,10 @@ class SimulatorService:
             categories = ("school", "childcare", "kindergarten", "university", "college")
         elif role_key == "work":
             categories = self.WORK_CATEGORIES.get(occupation or Occupation.OFFICE, ("office", "commercial"))
+        elif role_key == "favorite" and category:
+            categories = (category.strip().lower(),)
         else:
-            raise ValueError("role must be home, work, or school")
+            raise ValueError("role must be home, work, school, or favorite with a category")
         search = getattr(self.place_provider, "search", None)
         return [asdict(place) for place in (search(query, categories, limit) if search else [])]
 
@@ -257,7 +279,9 @@ class SimulatorService:
                    work_place_id: str | None = None, school_place_id: str | None = None,
                    employer_id: str | None = None, company_name: str | None = None,
                    personality_traits: dict[str, float] | None = None,
-                   communication_style: str | None = None, personality_summary: str | None = None) -> dict[str, Any]:
+                   communication_style: str | None = None, personality_summary: str | None = None,
+                   background: str | None = None, interests: str | None = None, goals: str | None = None,
+                   dialogue_notes: str | None = None) -> dict[str, Any]:
         """Persist one admin-created person and add only their schedule to the live world."""
         with self._generation_lock:
             pid = (person_id or "").strip().upper() or self._next_person_id()
@@ -298,7 +322,9 @@ class SimulatorService:
                                                 work_donor.employer_id if not requested_work else None)
             person = Person(pid, name.strip(), gender, age, age_group_for(age), family, occupation,
                             job_title.strip(), "", "", assigned_home, assigned_work, assigned_school,
-                            assigned_employer, **profile, company_name=(company_name or "").strip())
+                            assigned_employer, **profile, company_name=(company_name or "").strip(),
+                            background=(background or "").strip(), interests=(interests or "").strip(),
+                            goals=(goals or "").strip(), dialogue_notes=(dialogue_notes or "").strip())
             events = self.world.schedule.generate_period(person, self.schedule_start, self.days)
             with self._lock:
                 self.added_people.append(person)
@@ -318,3 +344,110 @@ class SimulatorService:
                         places[role] = asdict(self.place_provider.get(place_id_value))
             return {"person": person_to_dict(person), "places": places, "events": len(events),
                     "population": len(self.people), "version": self.version}
+
+    def add_custom_place(self, name: str, category: str, lat: float, lng: float,
+                         address: str = "") -> dict[str, Any]:
+        if not name.strip() or not category.strip() or not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            raise ValueError("Invalid custom place")
+        key = stable_seed(name.strip(), category.strip(), round(lat, 7), round(lng, 7), "custom_place")
+        place_id = f"USR_{key % 10**15:015d}"
+        try:
+            place = self.place_provider.get(place_id) if self.place_provider else None
+        except KeyError:
+            place = None
+        if place is None:
+            place = Place(place_id, name.strip(), category.strip().lower(), lat, lng, address.strip(), "admin")
+            self.custom_places.append(place)
+            if self.place_provider:
+                self.place_provider.put(place)
+            self.version += 1
+            self._cache.clear()
+            self.save()
+        return asdict(place)
+
+    def _replace_person(self, person_id: str, **changes: Any) -> Person:
+        updated = replace(self.people[person_id], **changes)
+        self.people[person_id] = updated
+        self.people_list = [updated if person.person_id == person_id else person for person in self.people_list]
+        self.added_people = [updated if person.person_id == person_id else person for person in self.added_people]
+        return updated
+
+    def add_relationship(self, *, person_id: str, counterpart_kind: str, relation_type: str,
+                         counterpart_id: str | None = None, counterpart_name: str | None = None,
+                         co_resident: bool = False, home_place_id: str | None = None,
+                         strength: float = .7, contact_frequency: str = "weekly",
+                         description: str = "") -> dict[str, Any]:
+        person_id = person_id.strip().upper()
+        if person_id not in self.people:
+            raise ValueError(f"Unknown person: {person_id}")
+        kind, relation = counterpart_kind.strip().lower(), relation_type.strip().lower()
+        if kind not in {"in_population", "external"}:
+            raise ValueError("counterpart_kind must be in_population or external")
+        allowed = {"spouse", "friend", "parent", "adult_child", "coworker", "extended_family"}
+        if relation not in allowed or not 0 <= strength <= 1:
+            raise ValueError("Invalid relationship type or strength")
+        target_id = (counterpart_id or "").strip().upper()
+        label = (counterpart_name or "").strip()
+        if kind == "in_population":
+            if target_id not in self.people or target_id == person_id:
+                raise ValueError("Choose a different existing person_id")
+            label = self.people[target_id].name
+            relationship_id = f"REL_ADMIN_{stable_seed(person_id, target_id, relation) % 10**12:012d}"
+            if any(item["relationship_id"] == relationship_id for item in self.admin_relationships):
+                raise ValueError("This relationship already exists")
+            if co_resident:
+                shared_home = self.people[person_id].home_place_id
+                self.person_place_overrides.setdefault(target_id, {})["home_place_id"] = shared_home
+                self._replace_person(target_id, home_place_id=shared_home)
+            resolved_home = self.people[target_id].home_place_id
+        else:
+            if not label:
+                raise ValueError("External contacts require a name")
+            target_id = f"EXT_ADMIN_{stable_seed(person_id, label, relation) % 10**12:012d}"
+            relationship_id = f"REL_ADMIN_{stable_seed(person_id, target_id, relation) % 10**12:012d}"
+            if any(item["relationship_id"] == relationship_id for item in self.admin_relationships):
+                raise ValueError("This relationship already exists")
+            resolved_home = self.people[person_id].home_place_id if co_resident else self._validated_place_id(home_place_id)
+            if not resolved_home:
+                raise ValueError("External non-resident contacts require a home place")
+        record = {
+            "relationship_id": relationship_id,
+            "person_id": person_id, "counterpart_kind": kind, "counterpart_id": target_id,
+            "counterpart_name": label, "relation_type": relation, "co_resident": bool(co_resident),
+            "home_place_id": resolved_home, "strength": round(float(strength), 2),
+            "contact_frequency": contact_frequency.strip()[:40], "description": description.strip()[:2000],
+        }
+        self.admin_relationships.append(record)
+        self.save()
+        return record
+
+    def set_schedule_override(self, person_id: str, workdays: list[int], work_start: str,
+                              work_end: str) -> dict[str, Any]:
+        person_id = person_id.strip().upper()
+        if person_id not in self.people or any(day not in range(7) for day in workdays):
+            raise ValueError("Unknown person or invalid workdays")
+        start = datetime.strptime(work_start, "%H:%M").time()
+        end = datetime.strptime(work_end, "%H:%M").time()
+        if end <= start:
+            raise ValueError("work_end must be later than work_start")
+        override = {"workdays": sorted(set(workdays)), "work_start": work_start, "work_end": work_end}
+        self.schedule_overrides[person_id] = override
+        self.save()
+        return override
+
+    def add_favorite_place(self, person_id: str, place_id: str, category: str,
+                           label: str, weight: float) -> dict[str, Any]:
+        person_id = person_id.strip().upper()
+        if person_id not in self.people or not 0 < weight <= 1:
+            raise ValueError("Unknown person or invalid preference weight")
+        resolved = self._validated_place_id(place_id)
+        place = self.place_provider.get(resolved) if self.place_provider and resolved else None
+        if not place:
+            raise ValueError("Unknown favorite place")
+        record = {"person_id": person_id, "place_id": resolved, "category": category.strip().lower(),
+                  "label": label.strip() or place.name, "weight": round(float(weight), 2)}
+        self.favorite_places = [item for item in self.favorite_places
+                                if not (item["person_id"] == person_id and item["place_id"] == resolved)]
+        self.favorite_places.append(record)
+        self.save()
+        return record

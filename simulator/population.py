@@ -51,6 +51,10 @@ def load_population(path: str | Path) -> list[Person]:
                 communication_style=(row.get("communication_style") or "均衡自然").strip(),
                 personality_summary=(row.get("personality_summary") or "").strip(),
                 company_name=(row.get("company_name") or "").strip(),
+                background=(row.get("background") or "").strip(),
+                interests=(row.get("interests") or "").strip(),
+                goals=(row.get("goals") or "").strip(),
+                dialogue_notes=(row.get("dialogue_notes") or "").strip(),
             ))
     return people
 

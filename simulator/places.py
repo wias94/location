@@ -267,21 +267,31 @@ class PlaceResolver:
 
     def __init__(self, provider: PlaceProvider | None = None, seed: int = 20260819,
                  people: dict[str, Person] | None = None, relationships_path: str | Path | None = None,
-                 external_contacts_path: str | Path | None = None) -> None:
+                 external_contacts_path: str | Path | None = None,
+                 admin_relationships: list[dict] | None = None,
+                 favorite_places: list[dict] | None = None) -> None:
         self.provider = provider or InMemoryPlaceProvider()
         self.seed = seed
         self.people = people or {}
         self.relationships: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+        self.relationship_strengths: dict[tuple[str, str, str], float] = {}
         self.external_contacts: dict[str, dict[str, list[ExternalContact]]] = defaultdict(lambda: defaultdict(list))
+        self.external_strengths: dict[tuple[str, str, str], float] = {}
+        self.favorite_places: dict[str, dict[str, list[tuple[str, float]]]] = defaultdict(lambda: defaultdict(list))
         if relationships_path and Path(relationships_path).exists():
             with Path(relationships_path).open(encoding="utf-8-sig", newline="") as handle:
                 for row in csv.DictReader(handle):
                     a, b, kind = row["person_id_a"], row["person_id_b"], row["relationship_type"]
+                    strength = float(row.get("strength") or .5)
                     self.relationships[a][kind].append(b)
                     self.relationships[b][kind].append(a)
+                    self.relationship_strengths[(a, kind, b)] = strength
+                    self.relationship_strengths[(b, kind, a)] = strength
                     if kind == "parent_of":
                         self.relationships[a]["adult_child"].append(b)
                         self.relationships[b]["parent"].append(a)
+                        self.relationship_strengths[(a, "adult_child", b)] = strength
+                        self.relationship_strengths[(b, "parent", a)] = strength
         if external_contacts_path and Path(external_contacts_path).exists():
             with Path(external_contacts_path).open(encoding="utf-8-sig", newline="") as handle:
                 for row in csv.DictReader(handle):
@@ -291,6 +301,29 @@ class PlaceResolver:
                         row.get("availability_profile") or "evenings_and_weekends",
                     )
                     self.external_contacts[contact.person_id][contact.relation_type].append(contact)
+        for record in admin_relationships or []:
+            person_id, target_id = record["person_id"], record["counterpart_id"]
+            relation = record["relation_type"]
+            if record["counterpart_kind"] == "in_population":
+                reverse = {"parent": "adult_child", "adult_child": "parent"}.get(relation, relation)
+                self.relationships[person_id][relation].append(target_id)
+                self.relationships[target_id][reverse].append(person_id)
+                strength = float(record.get("strength", .7))
+                self.relationship_strengths[(person_id, relation, target_id)] = strength
+                self.relationship_strengths[(target_id, reverse, person_id)] = strength
+            else:
+                external_relation = "partner" if relation == "spouse" else relation
+                self.external_contacts[person_id][external_relation].append(ExternalContact(
+                    target_id, person_id, external_relation, record["counterpart_name"], record["home_place_id"],
+                    bool(record.get("co_resident")), "admin_defined",
+                ))
+                frequency = {"daily": 1.0, "weekly": .8, "monthly": .5, "rarely": .25}.get(
+                    record.get("contact_frequency"), .7)
+                self.external_strengths[(person_id, external_relation, target_id)] = (
+                    float(record.get("strength", .7)) * frequency)
+        for record in favorite_places or []:
+            self.favorite_places[record["person_id"]][record["category"]].append(
+                (record["place_id"], float(record["weight"])))
         prefetch = getattr(self.provider, "prefetch", None)
         if prefetch:
             prefetch(
@@ -304,6 +337,7 @@ class PlaceResolver:
                 for contacts in by_type.values()
                 for contact in contacts
             )
+            prefetch(record["place_id"] for record in favorite_places or [])
 
     def _coordinates(self, key: str, origin: Place | None = None, radius_km: float = 12.0) -> tuple[float, float]:
         number = stable_seed(key, base_seed=self.seed)
@@ -348,6 +382,20 @@ class PlaceResolver:
                 if friend and friend.home_place_id:
                     return self.provider.get(friend.home_place_id)
         category = self._destination_category(destination_type, person.person_id, bucket)
+        favorites = self.favorite_places.get(person.person_id, {}).get(category, ())
+        if favorites:
+            total = sum(weight for _, weight in favorites)
+            chance = min(.95, total)
+            roll = (stable_seed(person.person_id, bucket, destination_type, "favorite_chance",
+                                base_seed=self.seed) % 1_000_000) / 1_000_000
+            if roll < chance:
+                point = (stable_seed(person.person_id, bucket, destination_type, "favorite_choice",
+                                     base_seed=self.seed) % 1_000_000) / 1_000_000 * total
+                for place_id, weight in favorites:
+                    point -= weight
+                    if point <= 0:
+                        return self.provider.get(place_id)
+                return self.provider.get(favorites[-1][0])
         near = destination_type in {"RESTAURANT_NEAR_WORK", "RESTAURANT_NEAR_CAMPUS", "CAMPUS_CANTEEN"}
         travel_scale = .65 + .70 * person.travel_tolerance
         radius = .8 if near else 5.0 * travel_scale
