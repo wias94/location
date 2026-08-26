@@ -50,6 +50,7 @@ def load_population(path: str | Path) -> list[Person]:
                 directness=_trait(row, "directness"), patience=_trait(row, "patience"),
                 communication_style=(row.get("communication_style") or "均衡自然").strip(),
                 personality_summary=(row.get("personality_summary") or "").strip(),
+                company_name=(row.get("company_name") or "").strip(),
             ))
     return people
 
@@ -73,6 +74,23 @@ def age_group_for(age: int) -> str:
         return "18-19"
     lower = min(80, age // 5 * 5)
     return "80+" if lower == 80 else f"{lower}-{lower + 4}"
+
+
+def summarize_personality(traits: dict[str, float], style: str) -> str:
+    sociability = traits["sociability"]
+    routine = traits["routine_preference"]
+    spontaneity = traits["spontaneity"]
+    social = ("性格较为外向，通常愿意主动联系熟人并参加共同活动" if sociability >= .67 else
+              "性格偏安静，更喜欢小范围交往和熟悉的人" if sociability <= .36 else
+              "社交态度适中，既愿意参加活动，也需要独处时间")
+    rhythm = ("日常节奏规律，倾向提前安排" if routine >= .67 else
+              "行动比较随性，容易接受临时邀约" if spontaneity >= .67 else
+              "通常会做基本安排，但也愿意临时调整")
+    mobility = ("对较远的出行接受度较高" if traits["travel_tolerance"] >= .68 else
+                "更偏好住处或工作地点附近的活动" if traits["travel_tolerance"] <= .34 else
+                "对出行距离没有明显偏好")
+    priorities = "重视家庭联系" if traits["family_orientation"] >= .68 else "生活取向相对均衡"
+    return f"{social}。{rhythm}；{mobility}。交流方式{style}，{priorities}。"
 
 
 def generated_personality(person_id: str, age: int, family: Family,
@@ -112,15 +130,5 @@ def generated_personality(person_id: str, age: int, family: Family,
         style = "健谈外向"
     else:
         style = "克制务实"
-    social = ("性格较为外向，通常愿意主动联系熟人并参加共同活动" if sociability >= .67 else
-              "性格偏安静，更喜欢小范围交往和熟悉的人" if sociability <= .36 else
-              "社交态度适中，既愿意参加活动，也需要独处时间")
-    rhythm = ("日常节奏规律，倾向提前安排" if routine >= .67 else
-              "行动比较随性，容易接受临时邀约" if spontaneity >= .67 else
-              "通常会做基本安排，但也愿意临时调整")
-    mobility = ("对较远的出行接受度较高" if traits["travel_tolerance"] >= .68 else
-                "更偏好住处或工作地点附近的活动" if traits["travel_tolerance"] <= .34 else
-                "对出行距离没有明显偏好")
-    priorities = "重视家庭联系" if traits["family_orientation"] >= .68 else "生活取向相对均衡"
     return {**traits, "communication_style": style,
-            "personality_summary": f"{social}。{rhythm}；{mobility}。交流方式{style}，{priorities}。"}
+            "personality_summary": summarize_personality(traits, style)}

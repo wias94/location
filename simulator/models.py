@@ -53,6 +53,7 @@ class Person:
     patience: float = .5
     communication_style: str = "均衡自然"
     personality_summary: str = ""
+    company_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)

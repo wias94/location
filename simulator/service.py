@@ -12,7 +12,8 @@ from .behavior import ScheduleEngine
 from .clock import SimulationClock, utc_now
 from .config import BehaviorConfig
 from .models import Family, Gender, Occupation, Person
-from .population import age_group_for, generated_personality, load_population, person_from_dict, person_to_dict
+from .population import (age_group_for, generated_personality, load_population, person_from_dict, person_to_dict,
+                         summarize_personality)
 from .randomness import stable_seed
 from .places import PlaceResolver, load_place_provider
 from .routes import RouteCache, route_provider_for_mode
@@ -60,6 +61,14 @@ class JsonStateStore:
 
 
 class SimulatorService:
+    WORK_CATEGORIES = {
+        Occupation.OFFICE: ("office", "commercial"),
+        Occupation.SERVICE: ("restaurant", "retail", "hotel", "supermarket", "gym"),
+        Occupation.MANUAL: ("industrial", "commercial"),
+        Occupation.FREELANCER: ("residential", "cafe", "office"),
+        Occupation.STUDENT: ("university", "college"),
+    }
+
     def __init__(self, population_path: str | Path, state_path: str | Path, days: int = 1,
                  places_path: str | Path | None = None, relationships_path: str | Path | None = None,
                  road_network_path: str | Path | None = None, route_cache_path: str | Path | None = None,
@@ -227,10 +236,28 @@ class SimulatorService:
                 raise ValueError(f"Unknown place_id: {value}") from None
         return value
 
+    def search_places(self, query: str, role: str, occupation: Occupation | None = None,
+                      limit: int = 8) -> list[dict[str, Any]]:
+        if not self.place_provider:
+            return []
+        role_key = role.strip().lower()
+        if role_key == "home":
+            categories = ("residential",)
+        elif role_key == "school":
+            categories = ("school", "childcare", "kindergarten", "university", "college")
+        elif role_key == "work":
+            categories = self.WORK_CATEGORIES.get(occupation or Occupation.OFFICE, ("office", "commercial"))
+        else:
+            raise ValueError("role must be home, work, or school")
+        search = getattr(self.place_provider, "search", None)
+        return [asdict(place) for place in (search(query, categories, limit) if search else [])]
+
     def add_person(self, *, person_id: str | None, name: str, gender: Gender, age: int, family: Family,
                    occupation: Occupation, job_title: str, home_place_id: str | None = None,
                    work_place_id: str | None = None, school_place_id: str | None = None,
-                   personality_summary: str | None = None) -> dict[str, Any]:
+                   employer_id: str | None = None, company_name: str | None = None,
+                   personality_traits: dict[str, float] | None = None,
+                   communication_style: str | None = None, personality_summary: str | None = None) -> dict[str, Any]:
         """Persist one admin-created person and add only their schedule to the live world."""
         with self._generation_lock:
             pid = (person_id or "").strip().upper() or self._next_person_id()
@@ -257,11 +284,21 @@ class SimulatorService:
                 assigned_school = self._donor(pid + "SCHOOL", school_candidates).school_place_id
 
             profile = generated_personality(pid, age, family, occupation)
+            if personality_traits:
+                if any(not 0 <= value <= 1 for value in personality_traits.values()):
+                    raise ValueError("Personality traits must be between 0 and 1")
+                profile.update(personality_traits)
+            if communication_style and communication_style.strip():
+                profile["communication_style"] = communication_style.strip()
             if personality_summary and personality_summary.strip():
                 profile["personality_summary"] = personality_summary.strip()
+            elif personality_traits or communication_style:
+                profile["personality_summary"] = summarize_personality(profile, profile["communication_style"])
+            assigned_employer = employer_id or (f"ORG_CUSTOM_{pid}" if company_name and requested_work else
+                                                work_donor.employer_id if not requested_work else None)
             person = Person(pid, name.strip(), gender, age, age_group_for(age), family, occupation,
                             job_title.strip(), "", "", assigned_home, assigned_work, assigned_school,
-                            work_donor.employer_id if not requested_work else None, **profile)
+                            assigned_employer, **profile, company_name=(company_name or "").strip())
             events = self.world.schedule.generate_period(person, self.schedule_start, self.days)
             with self._lock:
                 self.added_people.append(person)

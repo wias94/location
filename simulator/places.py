@@ -17,6 +17,7 @@ class PlaceProvider(Protocol):
     def put(self, place: Place) -> None: ...
     def all(self) -> dict[str, Place]: ...
     def count(self) -> int: ...
+    def search(self, query: str, categories: tuple[str, ...], limit: int = 8) -> list[Place]: ...
 
 
 class InMemoryPlaceProvider:
@@ -34,6 +35,15 @@ class InMemoryPlaceProvider:
 
     def count(self) -> int:
         return len(self._places)
+
+    def search(self, query: str, categories: tuple[str, ...], limit: int = 8) -> list[Place]:
+        needle = query.strip().casefold()
+        matches = [place for place in self._places.values()
+                   if place.category in categories and needle in place.name.casefold()]
+        matches.sort(key=lambda place: (place.name.casefold() != needle,
+                                        not place.name.casefold().startswith(needle),
+                                        len(place.name), place.place_id))
+        return matches[:limit]
 
 
 class CsvPlaceProvider(InMemoryPlaceProvider):
@@ -179,6 +189,34 @@ class SqlitePlaceProvider:
         with self._lock:
             static_count = int(self._database.execute("SELECT count(*) FROM places").fetchone()[0])
         return static_count + len(self._overlay)
+
+    def search(self, query: str, categories: tuple[str, ...], limit: int = 8) -> list[Place]:
+        needle = query.strip()
+        if not needle or not categories:
+            return []
+        placeholders = ",".join("?" for _ in categories)
+        sql = f"""
+            SELECT place_id, name, category, lat, lng, osm_id
+            FROM places
+            WHERE category IN ({placeholders}) AND instr(lower(name), lower(?)) > 0
+            ORDER BY CASE
+                WHEN lower(name) = lower(?) THEN 0
+                WHEN lower(name) LIKE lower(?) || '%' THEN 1
+                ELSE 2 END,
+                length(name), place_id
+            LIMIT ?
+        """
+        with self._lock:
+            rows = self._database.execute(sql, (*categories, needle, needle, needle, limit)).fetchall()
+        results = [self._cached_place(row) for row in rows]
+        overlay = [place for place in self._overlay.values()
+                   if place.category in categories and needle.casefold() in place.name.casefold()]
+        combined = {place.place_id: place for place in [*results, *overlay]}
+        return sorted(combined.values(), key=lambda place: (
+            place.name.casefold() != needle.casefold(),
+            not place.name.casefold().startswith(needle.casefold()),
+            len(place.name), place.place_id,
+        ))[:limit]
 
     def close(self) -> None:
         with self._lock:

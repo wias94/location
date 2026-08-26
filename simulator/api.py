@@ -4,6 +4,7 @@ import asyncio
 import os
 import secrets
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -40,7 +41,8 @@ service = SimulatorService(POPULATION_PATH, STATE_PATH, int(os.getenv("SCHEDULE_
                            ROUTING_MODE)
 organization_directory = OrganizationDirectory(ORGANIZATIONS_PATH, PERSON_ORGANIZATIONS_PATH)
 for added_person in service.added_people:
-    organization_directory.add_person(added_person.person_id, added_person.employer_id, added_person.job_title)
+    organization_directory.add_person(added_person.person_id, added_person.employer_id, added_person.job_title,
+                                      added_person.company_name, added_person.work_place_id)
 
 
 @asynccontextmanager
@@ -117,9 +119,23 @@ class PersonCreateRequest(BaseModel):
     family: Family
     occupation: Occupation
     job_title: str = Field(min_length=1, max_length=80)
+    home_name: str | None = Field(default=None, max_length=160)
+    company_name: str | None = Field(default=None, max_length=160)
+    school_name: str | None = Field(default=None, max_length=160)
     home_place_id: str | None = Field(default=None, max_length=40)
     work_place_id: str | None = Field(default=None, max_length=40)
     school_place_id: str | None = Field(default=None, max_length=40)
+    sociability: float | None = Field(default=None, ge=0, le=1)
+    routine_preference: float | None = Field(default=None, ge=0, le=1)
+    spontaneity: float | None = Field(default=None, ge=0, le=1)
+    travel_tolerance: float | None = Field(default=None, ge=0, le=1)
+    nightlife_preference: float | None = Field(default=None, ge=0, le=1)
+    activity_budget: float | None = Field(default=None, ge=0, le=1)
+    family_orientation: float | None = Field(default=None, ge=0, le=1)
+    warmth: float | None = Field(default=None, ge=0, le=1)
+    directness: float | None = Field(default=None, ge=0, le=1)
+    patience: float | None = Field(default=None, ge=0, le=1)
+    communication_style: str | None = Field(default=None, max_length=80)
     personality_summary: str | None = Field(default=None, max_length=1_000)
 
 
@@ -243,9 +259,75 @@ def create_interaction(body: InteractionRequest) -> dict[str, Any]:
 @app.post("/api/v1/admin/people", dependencies=[Depends(require_admin_key)], status_code=201)
 def create_person(body: PersonCreateRequest) -> dict[str, Any]:
     try:
-        result = service.add_person(**body.model_dump())
+        values = body.model_dump()
+        home_name = values.pop("home_name")
+        company_name = values.pop("company_name")
+        school_name = values.pop("school_name")
+        trait_keys = ("sociability", "routine_preference", "spontaneity", "travel_tolerance",
+                      "nightlife_preference", "activity_budget", "family_orientation", "warmth",
+                      "directness", "patience")
+        traits = {key: values.pop(key) for key in trait_keys if values.get(key) is not None}
+        for key in trait_keys:
+            values.pop(key, None)
+        values["personality_traits"] = traits or None
+        values["company_name"] = company_name
+        matched: dict[str, Any] = {}
+        if home_name and not values["home_place_id"]:
+            homes = service.search_places(home_name, "home", limit=8)
+            if not homes:
+                raise ValueError(f"No residential OSM place matched: {home_name}")
+            values["home_place_id"] = homes[0]["place_id"]
+            matched["home"] = homes[0]
+        if company_name:
+            companies = organization_directory.search(company_name, 8)
+            if companies:
+                company = companies[0]
+                values["employer_id"] = company["organization_id"]
+                if not values["work_place_id"]:
+                    values["work_place_id"] = company["place_id"]
+                matched["company"] = company
+            elif not values["work_place_id"]:
+                workplaces = service.search_places(company_name, "work", body.occupation, 8)
+                if not workplaces:
+                    raise ValueError(f"No company or work place matched: {company_name}")
+                values["work_place_id"] = workplaces[0]["place_id"]
+                matched["company_place"] = workplaces[0]
+        if school_name and not values["school_place_id"]:
+            schools = service.search_places(school_name, "school", limit=8)
+            if not schools:
+                raise ValueError(f"No school OSM place matched: {school_name}")
+            values["school_place_id"] = schools[0]["place_id"]
+            matched["school"] = schools[0]
+        result = service.add_person(**values)
         person = result["person"]
-        organization_directory.add_person(person["person_id"], person.get("employer_id"), person["job_title"])
+        organization_directory.add_person(person["person_id"], person.get("employer_id"), person["job_title"],
+                                          person.get("company_name", ""), person.get("work_place_id"))
+        result["matched_input"] = matched
         return result
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+
+
+@app.get("/api/v1/admin/places/search", dependencies=[Depends(require_admin_key)])
+def search_person_place(q: Annotated[str, Query(min_length=2, max_length=160)],
+                        role: Annotated[str, Query(pattern="^(home|company|school)$")],
+                        occupation: Occupation = Occupation.OFFICE,
+                        limit: Annotated[int, Query(ge=1, le=20)] = 8) -> dict[str, Any]:
+    try:
+        if role == "company":
+            companies = []
+            for organization in organization_directory.search(q, limit):
+                item: dict[str, Any] = {"organization": organization}
+                try:
+                    item["place"] = asdict(service.place_provider.get(organization["place_id"]))
+                except (KeyError, AttributeError):
+                    item["place"] = None
+                companies.append(item)
+            if not companies:
+                companies = [{"organization": None, "place": place}
+                             for place in service.search_places(q, "work", occupation, limit)]
+            return {"query": q, "role": role, "results": companies}
+        return {"query": q, "role": role,
+                "results": service.search_places(q, role, occupation, limit)}
     except ValueError as error:
         raise HTTPException(422, str(error)) from None

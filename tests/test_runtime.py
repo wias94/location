@@ -62,8 +62,12 @@ class RuntimeTests(unittest.TestCase):
             memberships = root / "memberships.csv"
             organizations.write_text("organization_id,name\nORG_1,Example Company\n", encoding="utf-8")
             memberships.write_text("person_id,organization_id\nP1,ORG_1\n", encoding="utf-8")
-            result = OrganizationDirectory(organizations, memberships).for_person("P1")
+            directory_index = OrganizationDirectory(organizations, memberships)
+            result = directory_index.for_person("P1")
             self.assertEqual(result["organization"]["name"], "Example Company")
+            self.assertEqual(directory_index.search("example")[0]["organization_id"], "ORG_1")
+            directory_index.add_person("P2", "ORG_CUSTOM_P2", "工程师", "Custom Company", "PLACE_2")
+            self.assertEqual(directory_index.for_person("P2")["organization"]["name"], "Custom Company")
 
     def test_admin_created_person_is_live_and_persistent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -83,11 +87,14 @@ class RuntimeTests(unittest.TestCase):
             service.start()
             result = service.add_person(person_id=None, name="测试人物", gender=Gender.FEMALE, age=31,
                                         family=Family.SINGLE_NO_KIDS, occupation=Occupation.OFFICE,
-                                        job_title="软件工程师")
+                                        job_title="软件工程师", personality_traits={"sociability": .91},
+                                        communication_style="坦率热情")
             person_id = result["person"]["person_id"]
             self.assertEqual(result["population"], 11)
             self.assertEqual(service.location(person_id)["person_id"], person_id)
             self.assertEqual(result["places"]["home"]["source"], "openstreetmap")
+            self.assertEqual(result["person"]["sociability"], .91)
+            self.assertEqual(result["person"]["communication_style"], "坦率热情")
             service.close()
 
             restored = SimulatorService(**options)

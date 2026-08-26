@@ -185,6 +185,7 @@ class SimulatorTests(unittest.TestCase):
                 origin = provider.get("HOME")
                 self.assertEqual(provider.get("REST").source, "openstreetmap")
                 self.assertEqual([place.place_id for place in provider.nearby("restaurant", origin, 1)], ["REST"])
+                self.assertEqual([place.place_id for place in provider.search("Home", ("residential",))], ["HOME"])
                 provider.put(Place("DYN", "Synthetic fallback", "park", 43.8, -79.3))
                 self.assertEqual(provider.get("DYN").name, "Synthetic fallback")
             finally:
