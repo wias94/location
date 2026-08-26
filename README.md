@@ -94,9 +94,10 @@ export ADMIN_API_KEY=replace-with-a-long-random-secret
 - 社交取消率、时间粒度和每日联动上限
 - 模拟时钟、暂停、跳转与速度
 - 日程重新生成
+- 新增人物并自动分配真实 HOME、WORK 和需要的 SCHOOL 地点
 - 临时指定某个人在一段时间内的位置和状态
 
-高级 JSON 编辑仍保留，方便备份和批量修改。
+管理员新增的人物会立即进入实时位置结果，只生成该人物的当日日程，并保存在 Railway Volume 的状态文件中，重启后不会丢失。新增人物默认还没有关系；其自动分配的雇主会进入运行时组织查询。高级 JSON 编辑仍保留，方便备份和批量修改。
 
 ## 从 OSM 重新生成数据
 
@@ -142,7 +143,7 @@ Railway 默认使用直线模式，因此不会把 `data/road_network.pkl` 展�
 - `ADMIN_API_KEY`：生产环境必填，至少 16 个字符。
 - `ADMIN_USER`：管理界面用户名，默认 `admin`。
 - `PUBLIC_API_KEY`：可选；启用后客户端通过 `X-API-Key` 发送。
-- `STATE_PATH`：时钟、行为配置和临时交互状态，Railway 默认 `/data/simulator-state.json`。
+- `STATE_PATH`：时钟、行为配置、临时交互和管理员新增人物，Railway 默认 `/data/simulator-state.json`。
 - `SIMULATION_START`：初始模拟时间。
 - `SCHEDULE_DAYS`：滚动日程窗口，默认 `1`。
 - `CORS_ORIGINS`：允许访问 API 的来源，逗号分隔。

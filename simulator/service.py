@@ -11,7 +11,9 @@ from typing import Any
 from .behavior import ScheduleEngine
 from .clock import SimulationClock, utc_now
 from .config import BehaviorConfig
-from .population import load_population
+from .models import Family, Gender, Occupation, Person
+from .population import age_group_for, generated_personality, load_population, person_from_dict, person_to_dict
+from .randomness import stable_seed
 from .places import PlaceResolver, load_place_provider
 from .routes import RouteCache, route_provider_for_mode
 from .world import WorldEngine
@@ -67,7 +69,11 @@ class SimulatorService:
         initial_simulation = datetime.fromisoformat(os.getenv("SIMULATION_START", datetime.now().date().isoformat() + "T00:00:00"))
         self.clock = SimulationClock.from_dict(saved["clock"]) if saved.get("clock") else SimulationClock(initial_simulation, utc_now(), 1)
         self.behavior = BehaviorConfig.from_dict(saved.get("behavior"))
-        self.people_list = load_population(population_path)
+        base_people = load_population(population_path)
+        base_ids = {person.person_id for person in base_people}
+        self.added_people = [person_from_dict(item) for item in saved.get("added_people", [])
+                             if item.get("person_id") not in base_ids]
+        self.people_list = [*base_people, *self.added_people]
         self.people = {person.person_id: person for person in self.people_list}
         self.days = int(days)
         self.version = int(saved.get("version", 1))
@@ -101,7 +107,8 @@ class SimulatorService:
         self.route_cache.flush()
         self.store.save({"clock": self.clock.to_dict(), "behavior": self.behavior.to_dict(), "days": self.days,
                          "version": self.version, "schedule_start": self.schedule_start.isoformat(),
-                         "interactions": [item.to_dict() for item in self.interactions]})
+                         "interactions": [item.to_dict() for item in self.interactions],
+                         "added_people": [person_to_dict(person) for person in self.added_people]})
 
     def close(self) -> None:
         self.save(); self.route_cache.close()
@@ -201,3 +208,76 @@ class SimulatorService:
     def update_behavior(self, data: dict[str, Any]) -> None:
         self.behavior = BehaviorConfig.from_dict(data)
         self.save()
+
+    def _next_person_id(self) -> str:
+        numbers = [int(pid[1:]) for pid in self.people if pid.startswith("P") and pid[1:].isdigit()]
+        return f"P{max(numbers, default=0) + 1:05d}"
+
+    def _donor(self, key: str, candidates: list[Person]) -> Person:
+        if not candidates:
+            raise ValueError("No suitable existing person is available for automatic place assignment")
+        return candidates[stable_seed(key, "place_assignment") % len(candidates)]
+
+    def _validated_place_id(self, place_id: str | None) -> str | None:
+        value = (place_id or "").strip() or None
+        if value and self.place_provider:
+            try:
+                self.place_provider.get(value)
+            except KeyError:
+                raise ValueError(f"Unknown place_id: {value}") from None
+        return value
+
+    def add_person(self, *, person_id: str | None, name: str, gender: Gender, age: int, family: Family,
+                   occupation: Occupation, job_title: str, home_place_id: str | None = None,
+                   work_place_id: str | None = None, school_place_id: str | None = None,
+                   personality_summary: str | None = None) -> dict[str, Any]:
+        """Persist one admin-created person and add only their schedule to the live world."""
+        with self._generation_lock:
+            pid = (person_id or "").strip().upper() or self._next_person_id()
+            if not pid.startswith("P") or not pid[1:].isdigit() or len(pid) > 12:
+                raise ValueError("person_id must use the format P followed by digits")
+            if pid in self.people:
+                raise ValueError(f"person_id already exists: {pid}")
+
+            requested_home = self._validated_place_id(home_place_id)
+            requested_work = self._validated_place_id(work_place_id)
+            requested_school = self._validated_place_id(school_place_id)
+            home_donor = self._donor(pid + "HOME", [p for p in self.people_list if p.home_place_id])
+            work_candidates = [p for p in self.people_list if p.occupation == occupation and p.work_place_id]
+            same_job = [p for p in work_candidates if p.job_title == job_title]
+            work_donor = self._donor(pid + "WORK", same_job or work_candidates)
+            assigned_home = requested_home or home_donor.home_place_id
+            assigned_work = requested_work or work_donor.work_place_id
+            assigned_school = requested_school
+            if occupation == Occupation.STUDENT:
+                assigned_school = assigned_school or assigned_work
+            elif family == Family.MINOR_CHILDREN and not assigned_school:
+                school_candidates = [p for p in self.people_list if p.school_place_id and
+                                     p.family == Family.MINOR_CHILDREN]
+                assigned_school = self._donor(pid + "SCHOOL", school_candidates).school_place_id
+
+            profile = generated_personality(pid, age, family, occupation)
+            if personality_summary and personality_summary.strip():
+                profile["personality_summary"] = personality_summary.strip()
+            person = Person(pid, name.strip(), gender, age, age_group_for(age), family, occupation,
+                            job_title.strip(), "", "", assigned_home, assigned_work, assigned_school,
+                            work_donor.employer_id if not requested_work else None, **profile)
+            events = self.world.schedule.generate_period(person, self.schedule_start, self.days)
+            with self._lock:
+                self.added_people.append(person)
+                self.people_list.append(person)
+                self.people[pid] = person
+                self.world.people[pid] = person
+                self.world.events[pid] = events
+                self.world._starts[pid] = [event.start_time for event in events]
+                self.version += 1
+                self._cache.clear()
+                self.save()
+            places = {}
+            if self.place_provider:
+                for role, place_id_value in (("home", assigned_home), ("work", assigned_work),
+                                             ("school", assigned_school)):
+                    if place_id_value:
+                        places[role] = asdict(self.place_provider.get(place_id_value))
+            return {"person": person_to_dict(person), "places": places, "events": len(events),
+                    "population": len(self.people), "version": self.version}

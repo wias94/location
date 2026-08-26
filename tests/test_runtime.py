@@ -1,3 +1,4 @@
+import csv
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -5,8 +6,11 @@ from pathlib import Path
 
 from simulator.clock import SimulationClock
 from simulator.config import BehaviorConfig
+from simulator.models import Family, Gender, Occupation
 from simulator.organizations import OrganizationDirectory
-from simulator.service import Interaction, JsonStateStore
+from simulator.service import Interaction, JsonStateStore, SimulatorService
+
+ROOT = Path(__file__).parents[1]
 
 
 class RuntimeTests(unittest.TestCase):
@@ -60,6 +64,36 @@ class RuntimeTests(unittest.TestCase):
             memberships.write_text("person_id,organization_id\nP1,ORG_1\n", encoding="utf-8")
             result = OrganizationDirectory(organizations, memberships).for_person("P1")
             self.assertEqual(result["organization"]["name"], "Example Company")
+
+    def test_admin_created_person_is_live_and_persistent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = ROOT / "data" / "gta_population_with_places.csv"
+            population = root / "people.csv"
+            with source.open(encoding="utf-8-sig", newline="") as source_file:
+                reader = csv.DictReader(source_file)
+                rows = [next(reader) for _ in range(10)]
+                with population.open("w", encoding="utf-8", newline="") as target:
+                    writer = csv.DictWriter(target, fieldnames=reader.fieldnames)
+                    writer.writeheader(); writer.writerows(rows)
+            state = root / "state.json"
+            options = dict(population_path=population, state_path=state, days=1,
+                           places_path=ROOT / "data" / "places.sqlite")
+            service = SimulatorService(**options)
+            service.start()
+            result = service.add_person(person_id=None, name="测试人物", gender=Gender.FEMALE, age=31,
+                                        family=Family.SINGLE_NO_KIDS, occupation=Occupation.OFFICE,
+                                        job_title="软件工程师")
+            person_id = result["person"]["person_id"]
+            self.assertEqual(result["population"], 11)
+            self.assertEqual(service.location(person_id)["person_id"], person_id)
+            self.assertEqual(result["places"]["home"]["source"], "openstreetmap")
+            service.close()
+
+            restored = SimulatorService(**options)
+            self.assertIn(person_id, restored.people)
+            self.assertEqual(len(restored.added_people), 1)
+            restored.close()
 
 
 if __name__ == "__main__":

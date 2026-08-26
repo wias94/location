@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
+from .models import Family, Gender, Occupation
 from .organizations import OrganizationDirectory
 from .service import SimulatorService
 
@@ -38,6 +39,8 @@ service = SimulatorService(POPULATION_PATH, STATE_PATH, int(os.getenv("SCHEDULE_
                            RELATIONSHIPS_PATH, ROAD_NETWORK_PATH, ROUTE_CACHE_PATH, EXTERNAL_CONTACTS_PATH,
                            ROUTING_MODE)
 organization_directory = OrganizationDirectory(ORGANIZATIONS_PATH, PERSON_ORGANIZATIONS_PATH)
+for added_person in service.added_people:
+    organization_directory.add_person(added_person.person_id, added_person.employer_id, added_person.job_title)
 
 
 @asynccontextmanager
@@ -104,6 +107,20 @@ class InteractionRequest(BaseModel):
     status: str = Field(min_length=1, max_length=40)
     duration_minutes: int = Field(ge=1, le=10_080)
     start_time: datetime | None = None
+
+
+class PersonCreateRequest(BaseModel):
+    person_id: str | None = Field(default=None, max_length=12)
+    name: str = Field(min_length=1, max_length=80)
+    gender: Gender
+    age: int = Field(ge=18, le=100)
+    family: Family
+    occupation: Occupation
+    job_title: str = Field(min_length=1, max_length=80)
+    home_place_id: str | None = Field(default=None, max_length=40)
+    work_place_id: str | None = Field(default=None, max_length=40)
+    school_place_id: str | None = Field(default=None, max_length=40)
+    personality_summary: str | None = Field(default=None, max_length=1_000)
 
 
 @app.get("/health")
@@ -176,7 +193,8 @@ def admin_page() -> str:
 @app.get("/api/v1/admin/config", dependencies=[Depends(require_admin_key)])
 def admin_config() -> dict[str, object]:
     return {"simulation": service.status(), "behavior": service.behavior.to_dict(),
-            "interactions": [item.to_dict() for item in service.interactions[-100:]]}
+            "interactions": [item.to_dict() for item in service.interactions[-100:]],
+            "added_people": [person.person_id for person in service.added_people[-100:]]}
 
 
 @app.post("/api/v1/admin/clock/{action}", dependencies=[Depends(require_admin_key)])
@@ -218,5 +236,16 @@ def create_interaction(body: InteractionRequest) -> dict[str, Any]:
         return service.add_interaction(**body.model_dump()).to_dict()
     except KeyError:
         raise HTTPException(404, "Unknown person") from None
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+
+
+@app.post("/api/v1/admin/people", dependencies=[Depends(require_admin_key)], status_code=201)
+def create_person(body: PersonCreateRequest) -> dict[str, Any]:
+    try:
+        result = service.add_person(**body.model_dump())
+        person = result["person"]
+        organization_directory.add_person(person["person_id"], person.get("employer_id"), person["job_title"])
+        return result
     except ValueError as error:
         raise HTTPException(422, str(error)) from None

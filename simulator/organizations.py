@@ -28,3 +28,17 @@ class OrganizationDirectory:
 
     def snapshot(self) -> dict[str, object]:
         return {"organizations": self.organizations, "memberships": self.memberships}
+
+    def add_person(self, person_id: str, organization_id: str | None, member_role: str) -> None:
+        """Add an in-memory membership for an admin-created person.
+
+        The person itself is persisted by SimulatorService and this membership is
+        reconstructed on each start, so the immutable source CSV stays untouched.
+        """
+        if not organization_id or organization_id not in self.by_id or person_id in self.by_person:
+            return
+        membership = {"person_id": person_id, "organization_id": organization_id,
+                      "team_id": "", "member_role": member_role}
+        self.memberships.append(membership)
+        self.by_person[person_id] = membership
+        self.version = hashlib.sha256(f"{self.version}|{person_id}|{organization_id}".encode()).hexdigest()[:16]
