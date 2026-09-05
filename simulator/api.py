@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -52,12 +53,30 @@ async def lifespan(_: FastAPI):
     await asyncio.to_thread(service.start)
     maintenance = asyncio.create_task(maintain_schedule())
     route_warming = asyncio.create_task(warm_routes())
+    history_recording = asyncio.create_task(record_history())
     try:
         yield
     finally:
         maintenance.cancel()
         route_warming.cancel()
+        history_recording.cancel()
+        await asyncio.gather(maintenance, route_warming, history_recording, return_exceptions=True)
         service.close()
+
+
+async def record_history() -> None:
+    while True:
+        try:
+            # Finish in-flight DB/file work before closing the service on shutdown.
+            capture = asyncio.create_task(asyncio.to_thread(service.history.capture, service))
+            try:
+                await asyncio.shield(capture)
+            except asyncio.CancelledError:
+                await capture
+                raise
+        except Exception:
+            logging.exception("History capture failed; retrying in 30 seconds")
+        await asyncio.sleep(30)
 
 
 async def maintain_schedule() -> None:

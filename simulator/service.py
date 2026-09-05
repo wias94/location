@@ -18,6 +18,7 @@ from .randomness import stable_seed
 from .places import PlaceResolver, load_place_provider
 from .routes import RouteCache, route_provider_for_mode
 from .world import WorldEngine
+from .history import HistoryStore
 
 
 @dataclass(slots=True)
@@ -74,6 +75,7 @@ class SimulatorService:
                  road_network_path: str | Path | None = None, route_cache_path: str | Path | None = None,
                  external_contacts_path: str | Path | None = None, routing_mode: str = "straight") -> None:
         self.store = JsonStateStore(state_path)
+        self.history = HistoryStore(Path(state_path).with_name("history.sqlite"))
         saved = self.store.load()
         initial_simulation = datetime.fromisoformat(os.getenv("SIMULATION_START", datetime.now().date().isoformat() + "T00:00:00"))
         self.clock = SimulationClock.from_dict(saved["clock"]) if saved.get("clock") else SimulationClock(initial_simulation, utc_now(), 1)
@@ -129,7 +131,7 @@ class SimulatorService:
 
     def save(self) -> None:
         self.route_cache.flush()
-        self.store.save({"clock": self.clock.to_dict(), "behavior": self.behavior.to_dict(), "days": self.days,
+        state = {"clock": self.clock.to_dict(), "behavior": self.behavior.to_dict(), "days": self.days,
                          "version": self.version, "schedule_start": self.schedule_start.isoformat(),
                          "interactions": [item.to_dict() for item in self.interactions],
                          "added_people": [person_to_dict(person) for person in self.added_people],
@@ -137,7 +139,9 @@ class SimulatorService:
                          "schedule_overrides": self.schedule_overrides,
                          "favorite_places": self.favorite_places,
                          "custom_places": [asdict(place) for place in self.custom_places],
-                         "person_place_overrides": self.person_place_overrides})
+                         "person_place_overrides": self.person_place_overrides}
+        self.history.state(state)
+        self.store.save(state)
 
     def close(self) -> None:
         self.save(); self.route_cache.close()

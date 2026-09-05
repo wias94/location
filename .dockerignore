@@ -5,3 +5,8 @@ __pycache__/
 work/
 *.jsonl
 data/places.csv
+data-runtime/
+history.sqlite
+history.sqlite-*
+.env*
+compose.yaml

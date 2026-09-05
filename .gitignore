@@ -8,3 +8,7 @@ work/
 *.jsonl
 simulator-state.json
 data/osm_cache/
+data-runtime/
+history.sqlite
+history.sqlite-*
+compose.yaml
